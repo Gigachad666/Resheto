@@ -1,0 +1,8 @@
+/build*/
+/.tools/
+/demo-run/
+*.user
+*.db
+*.db-*
+*.db.sha256
+/aqtinstall.log
