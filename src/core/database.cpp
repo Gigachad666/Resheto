@@ -129,4 +129,31 @@ std::vector<Result> Store::page(const QString &id,qint64 after,int limit) {
         lastRow_=cursor; return out;
     } catch(const Error &e) { throw Error(QStringLiteral("Ошибка чтения хранилища: ")+e.message); }
 }
+ResultPage Store::query(const QString &id,const ResultQuery &request) {
+    if(request.limit<1 || request.limit>1000 || request.offset<0 || request.upperRow<0) throw Error(QStringLiteral("Некорректные границы страницы"));
+    db_.transaction();
+    try {
+        ResultPage page; page.upperRow=request.upperRow;
+        if(!page.upperRow) { auto q=db_.exec("SELECT coalesce(max(row_id),0) FROM results WHERE job_id=?",{id}); q.next(); page.upperRow=q.value(0).toLongLong(); }
+        QString where="job_id=? AND row_id<=?"; QVariantList args{id,page.upperRow};
+        if(request.filter==ResultFilter::Matches) where+=" AND json_extract(data,'$.outcome')='signature_match'";
+        else if(request.filter==ResultFilter::NotChecked) where+=" AND json_extract(data,'$.outcome')='not_checked'";
+        else if(request.filter!=ResultFilter::All) throw Error(QStringLiteral("Неизвестный фильтр"));
+        if(!request.path.isEmpty()) { where+=" AND instr(json_extract(data,'$.path'),?)>0"; args.push_back(request.path); }
+        QString key;
+        switch(request.sort) {
+        case ResultSort::Insertion: key="row_id"; break;
+        case ResultSort::Path: key="json_extract(data,'$.path') COLLATE BINARY"; break;
+        case ResultSort::Outcome: key="json_extract(data,'$.outcome') COLLATE BINARY"; break;
+        case ResultSort::Signature: key="json_extract(data,'$.signature_name') COLLATE BINARY"; break;
+        default: throw Error(QStringLiteral("Неизвестная сортировка"));
+        }
+        { auto q=db_.exec("SELECT count(*) FROM results WHERE "+where,args); q.next(); page.total=q.value(0).toLongLong(); }
+        args.push_back(request.limit); args.push_back(request.offset);
+        const auto direction=request.descending?QString(" DESC"):QString(" ASC");
+        auto q=db_.exec("SELECT data FROM results WHERE "+where+" ORDER BY "+key+direction+",row_id"+direction+" LIMIT ? OFFSET ?",args,true);
+        while(q.next()) { auto r=Result::fromJson(decode(q.value(0))); if(r.jobId!=id) throw Error(QStringLiteral("Результат не соответствует заданию")); page.rows.push_back(std::move(r)); }
+        if(q.lastError().isValid()) throw Error(q.lastError().text()); q.finish(); db_.commit(); return page;
+    } catch(const Error &e) { db_.rollback(); throw Error(QStringLiteral("Ошибка чтения хранилища: ")+e.message); }
+}
 }

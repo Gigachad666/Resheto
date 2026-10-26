@@ -1,5 +1,7 @@
 {
   "version": "test-fixtures-1",
+  "purpose": "test",
+  "source": "Собственные безвредные контрольные правила АС Решето",
   "signatures": [
     {"id":"test-hash","name":"ТЕСТ: SHA-256 безопасной фикстуры","kind":"HASH","value":"352ee072ac88f7b408562198bc7c47b25bcbbe5d8fed3f48b6a9c109ff03a5fe","version":"1","enabled":1,"algorithm":"SHA-256"},
     {"id":"test-exact","name":"ТЕСТ: точный двоичный шаблон","kind":"PATTERN","value":"00ff5245534845544f00","version":"1","enabled":1},

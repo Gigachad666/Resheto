@@ -15,21 +15,26 @@
 namespace resheto {
 std::filesystem::path nativePath(const QString &p) {
 #ifdef _WIN32
-    return std::filesystem::path(p.toStdWString());
+    QString path=QDir::toNativeSeparators(absolute(p));
+    if(!path.startsWith("\\\\?\\")) path=path.startsWith("\\\\") ? "\\\\?\\UNC\\"+path.mid(2) : "\\\\?\\"+path;
+    return std::filesystem::path(path.toStdWString());
 #else
     return std::filesystem::path(QFile::encodeName(p).constData());
 #endif
 }
 QString qtPath(const std::filesystem::path &p) {
 #ifdef _WIN32
-    return QDir::cleanPath(QDir::fromNativeSeparators(QString::fromStdWString(p.native())));
+    QString path=QString::fromStdWString(p.native());
+    if(path.startsWith("\\\\?\\UNC\\")) path="\\\\"+path.mid(8);
+    else if(path.startsWith("\\\\?\\")) path=path.mid(4);
+    return QDir::cleanPath(QDir::fromNativeSeparators(path));
 #else
     return QFile::decodeName(p.native().c_str());
 #endif
 }
 bool isLinkOrReparse(const QString &p) {
 #ifdef _WIN32
-    const DWORD a=GetFileAttributesW(reinterpret_cast<LPCWSTR>(p.utf16()));
+    const DWORD a=GetFileAttributesW(nativePath(p).c_str());
     return a!=INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_REPARSE_POINT);
 #else
     std::error_code ec; return std::filesystem::is_symlink(std::filesystem::symlink_status(nativePath(p),ec));
@@ -56,7 +61,7 @@ struct ReadFile::Impl {
 ReadFile::ReadFile(const QString &path) : impl_(std::make_unique<Impl>()) {
     impl_->path=path;
 #ifdef _WIN32
-    impl_->handle=CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_SEQUENTIAL_SCAN,nullptr);
+    impl_->handle=CreateFileW(nativePath(path).c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_SEQUENTIAL_SCAN,nullptr);
     if(impl_->handle==INVALID_HANDLE_VALUE) throw Error(QStringLiteral("Открытие файла, код Windows %1").arg(GetLastError()));
     if(!GetFileInformationByHandle(impl_->handle,&impl_->info) || GetFileType(impl_->handle)!=FILE_TYPE_DISK || (impl_->info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT))) throw Error(QStringLiteral("Объект не является обычным файлом"));
 #else
@@ -97,7 +102,7 @@ bool ReadFile::unchanged() const {
 #ifdef _WIN32
     BY_HANDLE_FILE_INFORMATION current{}, named{};
     if(!GetFileInformationByHandle(impl_->handle,&current) || !Impl::same(impl_->info,current)) return false;
-    HANDLE h=CreateFileW(reinterpret_cast<LPCWSTR>(impl_->path.utf16()),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
+    HANDLE h=CreateFileW(nativePath(impl_->path).c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
     if(h==INVALID_HANDLE_VALUE) return false;
     bool ok=GetFileInformationByHandle(h,&named) && !(named.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && Impl::same(impl_->info,named);
     CloseHandle(h); return ok;

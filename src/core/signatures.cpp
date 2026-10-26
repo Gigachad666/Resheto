@@ -1,5 +1,7 @@
 #include "signatures.h"
 #include "database.h"
+#include "search.h"
+#include "import.h"
 #include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
@@ -37,9 +39,9 @@ static std::optional<qint64> number(const QVariant &v) {
     require(ok && n>=0,QStringLiteral("offset/size должен быть целым 0..INT64_MAX")); return n;
 }
 std::shared_ptr<const Snapshot> loadSignatures(const QString &path) {
-    const auto file=absolute(path);
+    const auto file=resolveSignaturePath(path);
     require(!QFileInfo::exists(file+"-wal") && !QFileInfo::exists(file+"-journal"),QStringLiteral("база имеет активный WAL/journal; завершите запись и подготовьте manifest"));
-    require(QFileInfo(file).isFile() && QFileInfo(file).size()<=64*1024*1024,QStringLiteral("база отсутствует либо больше 64 МиБ"));
+    require(QFileInfo(file).isFile() && QFileInfo(file).size()<=256*1024*1024,QStringLiteral("база отсутствует либо больше 256 МиБ"));
     QFile manifest(file+".sha256");
     require(manifest.open(QIODevice::ReadOnly) && manifest.size()<=128,QStringLiteral("нет manifest .sha256"));
     const auto expected=manifest.readAll().trimmed().toLower();
@@ -55,8 +57,14 @@ std::shared_ptr<const Snapshot> loadSignatures(const QString &path) {
         auto meta=db.exec("SELECT version FROM metadata");
         require(meta.next(),QStringLiteral("нет версии базы")); snap->version=meta.value(0).toString();
         require(!snap->version.trimmed().isEmpty() && snap->version.size()<=256 && !meta.next(),QStringLiteral("версия базы"));
-        auto q=db.exec("SELECT id,name,kind,value,version,enabled,algorithm,mask,offset,min_size,max_size FROM signatures ORDER BY id COLLATE BINARY");
-        QSet<QString> ids; qsizetype total=0; int count=0;
+        auto infoTable=db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='database_info'");
+        if(infoTable.next()) {
+            auto info=db.exec("SELECT purpose,source FROM database_info"); require(info.next(),QStringLiteral("database_info"));
+            snap->purpose=info.value(0).toString(); snap->source=info.value(1).toString();
+            require((snap->purpose=="working" || snap->purpose=="test" || snap->purpose=="synthetic" || snap->purpose=="custom") && !snap->source.trimmed().isEmpty() && snap->source.size()<=2048 && !info.next(),QStringLiteral("назначение/источник базы"));
+        }
+        auto q=db.exec("SELECT id,name,kind,value,version,enabled,algorithm,mask,offset,min_size,max_size FROM signatures ORDER BY id COLLATE BINARY",{},true);
+        QSet<QString> ids; qsizetype total=0; int count=0,patterns=0;
         while(q.next()) {
             require(++count<=MaxSignatures,QStringLiteral("слишком много записей"));
             Signature s; s.id=q.value(0).toString(); s.name=q.value(1).toString(); s.kind=q.value(2).toString(); s.version=q.value(4).toString();
@@ -70,6 +78,7 @@ std::shared_ptr<const Snapshot> loadSignatures(const QString &path) {
                 require(s.value.size()==32 && q.value(6).toString()=="SHA-256",QStringLiteral("digest/algorithm"));
                 require(q.value(7).isNull() && !s.offset,QStringLiteral("маска/offset для HASH"));
             } else if(s.kind=="PATTERN") {
+                require(++patterns<=2048,QStringLiteral("больше 2048 PATTERN"));
                 require(s.value.size()<=MaxPattern && q.value(6).isNull(),QStringLiteral("длина PATTERN/algorithm"));
                 if(!q.value(7).isNull()) {
                     const auto mask=q.value(7).toString();
@@ -80,18 +89,20 @@ std::shared_ptr<const Snapshot> loadSignatures(const QString &path) {
             } else require(false,QStringLiteral("неизвестный kind"));
             total+=s.value.size()+s.mask.size(); require(total<=MaxSignatureBytes,QStringLiteral("суммарная длина сигнатур"));
             if(enabled=="1") {
-                if(s.kind=="PATTERN") snap->maxPattern=qMax(snap->maxPattern,s.value.size());
+                if(s.kind=="PATTERN") { snap->maxPattern=qMax(snap->maxPattern,s.value.size()); ++snap->patternCount; }
+                else ++snap->hashCount;
                 snap->entries.push_back(std::move(s));
             }
         }
         require(!snap->entries.empty(),QStringLiteral("нет активных сигнатур")); db.commit();
     }
     require(fileHash(file)==before,QStringLiteral("база изменилась при загрузке"));
+    snap->index=std::make_shared<SearchIndex>(snap->entries);
     return snap;
 }
 void createSignatures(const QString &input,const QString &path) {
     require(!QFileInfo::exists(path) && !QFileInfo::exists(path+".sha256"),QStringLiteral("выходной файл уже существует"));
-    QFile source(input); require(source.open(QIODevice::ReadOnly) && source.size()<=32*1024*1024,QStringLiteral("JSON недоступен/слишком большой"));
+    QFile source(input); require(source.open(QIODevice::ReadOnly) && source.size()<=256*1024*1024,QStringLiteral("JSON недоступен/больше 256 МиБ"));
     QJsonParseError err; auto doc=QJsonDocument::fromJson(source.readAll(),&err);
     require(err.error==QJsonParseError::NoError && doc.isObject() && doc.object()["signatures"].isArray(),QStringLiteral("JSON"));
     {
@@ -100,6 +111,8 @@ void createSignatures(const QString &input,const QString &path) {
         db.exec("PRAGMA application_id=1381189441");
         db.exec("CREATE TABLE metadata(version TEXT NOT NULL)");
         db.exec("INSERT INTO metadata VALUES(?)",{doc.object()["version"].toString()});
+        db.exec("CREATE TABLE database_info(purpose TEXT NOT NULL,source TEXT NOT NULL)");
+        db.exec("INSERT INTO database_info VALUES(?,?)",{doc.object()["purpose"].toString("custom"),doc.object()["source"].toString(QStringLiteral("Пользовательский JSON"))});
         db.exec("CREATE TABLE signatures(id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL,value TEXT NOT NULL,version TEXT NOT NULL,enabled INTEGER NOT NULL,algorithm TEXT,mask TEXT,offset INTEGER,min_size INTEGER,max_size INTEGER)");
         for(const auto &v:doc.object()["signatures"].toArray()) {
             require(v.isObject(),QStringLiteral("запись JSON")); const auto o=v.toObject();

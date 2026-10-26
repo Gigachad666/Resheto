@@ -1,53 +1,48 @@
 # Показ АС Решето: 5–7 минут
 
-Перед показом выполните сборку/CTest из README. Все следующие файлы безопасны и создаются нашим C++ генератором. Сеть во время проверки не нужна. Для Windows команды ниже выполняются из корня проекта, Qt bin уже в PATH. Для Linux замените `build/windows/Release/*.exe` на `build/release/*`.
+Подготовьте сборку/CTest из README. Qt bin должен быть в PATH; сеть во время показа не нужна. В командах используются новые каталоги. Рабочая, контрольная и нагрузочная базы различаются назначением; алгоритм/исполняемый файл не меняется.
 
-1. **0:00–1:00 — подготовка и границы.**
+## Перед показом
 
-   ```powershell
-   ./build/windows/Release/resheto-prepare.exe --source data/demo_signatures.json --output demo-show
-   ./build/windows/Release/resheto.exe --path demo-show/fixtures --db demo-show/signatures.db --storage demo-show/resheto.db
-   ```
+```powershell
+./scripts/demo.ps1 -Bin build/final-20261025/Release -Output build/show-new
+./scripts/demo-results.ps1 -Bin build/final-20261025/Release -Output build/show-many-new
+```
 
-   `demo-show` должен отсутствовать. Объясните: Qt Widgets — оболочка, общий C++ модуль анализирует и сохраняет SQLite; служба и этапы 4–6 здесь не реализованы. Состояние базы должно стать «Готова», активных сигнатур 5 (ещё одна выключена). Manifest — контроль целостности, не подпись издателя.
+Первый скрипт готовит 11 безопасных файлов, сканирует их рабочей базой (0 совпадений), затем контрольной (5 совпадений), сверяет повторно прочитанные JSONL, проверяет коды 0/1/2/3. Второй создаёт 2100 обычных файлов и один положительный HASH-контроль, действительно сканирует каталог и сохраняет задание с 2101 checked/1 match/0 errors. По сортировке Unicode-пути обнаружение идёт после всех обычных строк.
 
-2. **1:00–2:15 — сканирование и обнаружения.** Нажмите «Начать» с включёнными подкаталогами. Ожидается 11 проверенных файлов, 5 совпадений, 0 ошибок. HASH: `hash.bin`; PATTERN: `exact.bin`, `masked.bin`, `fixed.bin`, `boundary.bin`. Пустой, похожие и вложенный Unicode-файл не дают совпадений. Откройте подсказку основания: boundary начинается на 65534 и заканчивается после границы блока 65536. Маска `1011` игнорирует один байт; fixed offset=17 и размер=32. Это анализ содержимого, расширение роли не играет.
+## Ход показа
 
-3. **2:15–3:15 — CLI, JSON и сохранение.**
-
-   ```powershell
-   ./build/windows/Release/resheto-cli.exe --path demo-show/fixtures --db demo-show/signatures.db --storage demo-show/resheto.db --json
-   ./build/windows/Release/resheto-cli.exe --last --storage demo-show/resheto.db --json
-   ```
-
-   Оба кода — 1. JSON Lines содержит результаты и итог задания; большие целые представлены строками. Закройте и заново откройте GUI с теми же аргументами: последнее задание/таблица восстанавливаются из SQLite. «Совпадений не обнаружено» не означает «безопасен».
-
-4. **3:15–4:15 — обход, отсутствие совпадения и ошибка.**
+1. **0:00–1:00 — рабочая поставка и границы.** Откройте `distribution/source/LICENSE`, provenance и manifest выбранной версии. Покажите 11 632 уникальных HASH из 11 636 строк, четыре дубля, 0 PATTERN. Источник — закреплённый MIT-снимок агрегатора Romain MARCOUX; семейства и происхождение до отдельного upstream источник не предоставляет. Checksum подтверждает целостность, не издателя. Служба и этапы 4–6 отсутствуют.
 
    ```powershell
-   ./build/windows/Release/resheto-cli.exe --path demo-show/fixtures --db demo-show/signatures.db --storage demo-show/resheto.db --non-recursive
-   ./build/windows/Release/resheto-cli.exe --path demo-show/fixtures/empty --db demo-show/signatures.db --storage demo-show/resheto.db
-   ./build/windows/Release/resheto-cli.exe --path demo-show/missing --db demo-show/signatures.db --storage demo-show/resheto.db
+   ./build/final-20261025/Release/resheto.exe --path build/show-new/fixtures --db distribution/working/current.json --storage build/show-new/gui-results.db
    ```
 
-   Нерекурсивно: 10 файлов, 5 совпадений, 1 объяснимый пропуск каталога, код 1. Пустой файл: full/no_match, код 0. Отсутствующий объект: «Не проверен» с причиной, failed/код 2. Ошибка не превращается в отсутствие совпадения. Для реального отказа одного файла/изменения во время чтения покажите соответствующие строки журнала автотестов: они управляемы, не зависят от удачного тайминга.
+   В сведениях базы: «Рабочая», версия, источник, HASH 11632/PATTERN 0. Нажмите «Начать»: 11 checked, 0 matches, 0 errors. Этот отрицательный ответ не доказывает безопасность или качество покрытия.
 
-5. **4:15–5:30 — отмена и отзывчивость.** Подготовьте заранее большой файл, чтобы не тратить время показа:
+2. **1:00–2:30 — контроль через тот же модуль.** В поле «Сигнатуры» выберите `build/show-new/signatures.db`, дождитесь «Тестовая», HASH 1/PATTERN 4. Снова «Начать» на тех же файлах: 11 checked, 5 matches. Фильтр «Совпадения» показывает hash.bin, exact.bin, masked.bin, fixed.bin, boundary.bin. Выберите строку и скопируйте путь/основание. HASH относится к точным байтам, изменение одного байта не совпадает; маска 1011 игнорирует один байт; fixed offset=17/min=max=32. boundary начинается на 65534 и пересекает блок 65536. Программа не использует имя/расширение как вердикт.
+
+3. **2:30–3:30 — история и все результаты.** Закройте окно. Откройте сохранённое задание на 2101 файл:
 
    ```powershell
-   ./build/windows/Release/resheto-prepare.exe --source data/demo_signatures.json --output demo-large --large-mib 512
-   ./build/windows/Release/resheto-cli.exe --path demo-large/fixtures --db demo-large/signatures.db --storage demo-large/resheto.db --cancel-after-ms 100 --json
-   ./build/windows/Release/resheto-cli.exe --path demo-large/fixtures --db demo-large/signatures.db --storage demo-large/resheto.db --cancel-after-ms 0 --json
+   ./build/final-20261025/Release/resheto.exe --path build/show-many-new/many --db build/show-many-new/signatures.db --storage build/show-many-new/results.db
    ```
 
-   На обычной машине первая команда сканирования успевает начать чтение; ожидается отмена, код 3. На очень быстрой машине уменьшите таймер или используйте GUI «Остановить» во время проверки `large.bin`. Второе сканирование детерминированно отменяется до обхода. В GUI выберите `demo-large/fixtures`, соответствующую базу и хранилище, нажмите «Начать», подвигайте окно/выделите строку и «Остановить». Индикатор не обещает точного процента. Проверьте состояние «Отменено» и доступность уже сохранённых строк; непосещённые файлы не выдумываются.
+   Последнее задание восстанавливается. Выберите «По пути»: в первой странице обычные строки; обнаружение после 2100 обычных. Один фильтр «Совпадения» немедленно показывает единственную строку «я совпадение.bin», без перелистывания. Снимите фильтр, найдите подстроку «я совпадение», проверьте оба направления сортировки пути/итога/сигнатуры. Поиск буквальный и учитывает регистр. Копирование возвращает полный Unicode-путь и basis.
 
-6. **5:30–6:30 — проверяемость и ограничения.**
+4. **3:30–4:30 — ошибки/отмена/JSON.** Покажите уже сохранённые error.jsonl/cancelled.jsonl либо выполните:
 
    ```powershell
-   ctest --test-dir build/windows -C Release --output-on-failure
+   ./build/final-20261025/Release/resheto-cli.exe --path build/show-new/missing --db build/show-new/signatures.db --storage build/show-new/resheto.db --json
+   ./build/final-20261025/Release/resheto-cli.exe --path build/show-new/fixtures --db build/show-new/signatures.db --storage build/show-new/resheto.db --cancel-after-ms 0 --json
+   ./build/final-20261025/Release/resheto-cli.exe --last --storage build/show-new/resheto.db --json
    ```
 
-   Покажите `core-results.txt`, `cli-results.txt`, `gui-results.txt` в каталоге сборки. Особо объясните: длинный шаблон может пересекать несколько блоков; файл проверяется через один открытый объект; обнаруженное изменение даёт not_checked; текущему заданию принадлежит снимок базы. Пропущенные проверки ОС нельзя выдавать за пройденные. Полный объём результатов и ограничения среды перечислены в verification.md. EICAR — отдельный ручной сценарий, не часть этого показа.
+   Коды 2, 3, 3. Ошибка/отмена — not_checked, полнота none. Приоритет: ошибка 2 > отмена 3 > обнаружение 1 > 0. JSON сохраняет все факты. В GUI кнопка «Остановить» проверяется на большем безопасном файле; не обещайте видимую длительную отмену для 11 маленьких файлов.
 
-Для полностью автоматического повтора основных консольных сценариев: `./scripts/demo.ps1 -Bin build/windows/Release -Output demo-auto`. Он сохраняет JSONL и сравнивает исходный вывод с повторно прочитанным, отказывается перезаписывать каталог.
+5. **4:30–5:30 — импорт и встраивание.** Покажите офлайн-команду из signature_sources.md, current.json и отдельные неизменяемые каталоги версий. При ошибке старый выбор остаётся. Запустите внешний consumer по integration.md: он вызывает библиотеку, а не CLI, проверяет ошибку/отмену/обнаружение/повторное чтение; Widgets/Test не нужны. Будущей службе нужен адаптер вызовов и путей.
+
+6. **5:30–6:30 — масштаб и ограничения.** Покажите performance.md и исходные docs/measurements. На 100000 HASH+1000 PATTERN, 64 МиБ, блок 64 КиБ: 1,049 с, загрузка 2,097 с, пик всего процесса 89,4 MiB; тысяча малых файлов с сохранением — 7,223 с. Это один ограниченный синтетический прогон, не процент обнаружения угроз. Linux, NTFS ACL, аппаратное отключение питания и перенос без SDK отдельно не проверены.
+
+Официальный EICAR — отдельный добровольный ручной сценарий в eicar_manual.md. Его не нужно получать/создавать для основного показа; защита ОС не отключается. Всё показанное обнаружение основывается на собственных безопасных байтах и обычной смене базы одного модуля.

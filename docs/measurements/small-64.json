@@ -1,0 +1,25 @@
+{
+    "load_ms": "8",
+    "mib": 64,
+    "peak_bytes": "17788928",
+    "profile": "small",
+    "runs": [
+        {
+            "block": 4096,
+            "scan_ms": "5006"
+        },
+        {
+            "block": 65536,
+            "scan_ms": "1136"
+        },
+        {
+            "block": 1048576,
+            "scan_ms": "1027"
+        }
+    ],
+    "small_files": 1000,
+    "small_matches": "625",
+    "small_scan_ms": "1254",
+    "tree_with_storage_ms": "6213"
+}
+

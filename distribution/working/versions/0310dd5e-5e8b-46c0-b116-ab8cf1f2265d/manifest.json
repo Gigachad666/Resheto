@@ -1,0 +1,23 @@
+{
+    "acquired_utc": "2026-10-24T22:38:37.559Z",
+    "attribution": "Copyright (c) 2025 Romain MARCOUX; malicious-hash aggregate feed",
+    "created_utc": "2026-10-24T22:41:12.537Z",
+    "database_sha256": "d2e4fff6ca3684bb41925457174fd5fe6176ac9bd05da62c8f43f9d7b4eec967",
+    "disabled": "0",
+    "duplicates": "4",
+    "excluded_test_pua": "0",
+    "format": "resheto-release-v1",
+    "hash": "11632",
+    "importer": "resheto-import/1",
+    "input_format": "sha256-lines",
+    "license": "MIT",
+    "license_url": "https://raw.githubusercontent.com/romainmarcoux/malicious-hash/9e6be541abb33859f49c06d66cf7c97e54ab2bc4/LICENSE",
+    "limitations": "Агрегатор не предоставляет семейства, размер, время и первоисточник отдельного SHA-256. Только HASH; без PATTERN.",
+    "lines": "11636",
+    "pattern": "0",
+    "source_revision": "9e6be541abb33859f49c06d66cf7c97e54ab2bc4",
+    "source_sha256": "07bf75ab004da3f5f5d1b25e41a8e3544ea7b66255d27ec7536672cb1f5e3b60",
+    "source_url": "https://raw.githubusercontent.com/romainmarcoux/malicious-hash/9e6be541abb33859f49c06d66cf7c97e54ab2bc4/full-hash-sha256-aa.txt",
+    "unsupported_algorithms": "0",
+    "version": "malicious-hash-9e6be541abb33859"
+}

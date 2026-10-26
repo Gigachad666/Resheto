@@ -9,6 +9,7 @@
 #include <vector>
 
 namespace resheto {
+class SearchIndex;
 struct Error : std::runtime_error {
     QString message;
     explicit Error(QString s) : std::runtime_error(s.toStdString()), message(std::move(s)) {}
@@ -22,8 +23,11 @@ struct Signature {
 };
 struct Snapshot {
     QString path, version, checksum;
+    QString purpose="custom", source=QStringLiteral("не указан");
+    qint64 hashCount=0, patternCount=0;
     std::vector<Signature> entries;
     qsizetype maxPattern = 0;
+    std::shared_ptr<const SearchIndex> index;
 };
 struct Result {
     QString jobId, path, identity, outcome = "not_checked", completeness = "none";

@@ -2,6 +2,7 @@
 #include "database.h"
 #include "file_access.h"
 #include "signatures.h"
+#include "search.h"
 #include <QCryptographicHash>
 #include <QElapsedTimer>
 #include <QFileInfo>
@@ -32,7 +33,7 @@ qint64 findPattern(const QByteArray &w,qint64 base,qint64 firstEnd,const Signatu
 }
 Result scanFile(const QString &path,const Request &request) {
     Result r; r.path=path; r.jobId=request.id; r.time=now();
-    if(!request.snapshot || request.snapshot->entries.empty() || request.blockSize<4096 || request.blockSize>4*1024*1024) {
+    if(!request.cancel || !request.snapshot || !request.snapshot->index || request.snapshot->entries.empty() || request.blockSize<4096 || request.blockSize>4*1024*1024) {
         r.code="analyzer_not_ready"; r.reason=QStringLiteral("Нет снимка базы либо некорректный размер блока"); return r;
     }
     r.databaseVersion=request.snapshot->version;
@@ -53,13 +54,8 @@ Result scanFile(const QString &path,const Request &request) {
             const qint64 base=consumed-tail.size();
             QByteArray window=tail+block;
             if(request.hooks.afterBlock) request.hooks.afterBlock(path,consumed+block.size());
-            for(const auto &s:request.snapshot->entries) {
-                if(cancelled()) return fail("cancelled",QStringLiteral("Проверка отменена"));
-                if(s.kind!="PATTERN" || (s.minSize && r.size<*s.minSize) || (s.maxSize && r.size>*s.maxSize)) continue;
-                auto pos=findPattern(window,base,consumed,s,cancelled);
-                if(pos==-2) return fail("cancelled",QStringLiteral("Поиск отменён"));
-                if(pos>=0 && (!found || pos<foundOffset || (pos==foundOffset && s.id.toUtf8()<found->id.toUtf8()))) { found=&s; foundOffset=pos; }
-            }
+            if(request.snapshot->maxPattern && !request.snapshot->index->patterns(*request.snapshot,window,base,consumed,r.size,cancelled,found,foundOffset))
+                return fail("cancelled",QStringLiteral("Поиск отменён"));
             consumed+=block.size();
             tail=window.right(qMax<qsizetype>(0,request.snapshot->maxPattern-1));
         }
@@ -67,9 +63,7 @@ Result scanFile(const QString &path,const Request &request) {
         if(consumed!=r.size || !file.unchanged()) return fail("changed",QStringLiteral("Файл изменён, исчез или путь подменён во время проверки"));
         const auto digest=hash.result();
         if(!found) {
-            for(const auto &s:request.snapshot->entries) {
-                if(s.kind=="HASH" && (!s.minSize || r.size>=*s.minSize) && (!s.maxSize || r.size<=*s.maxSize) && s.value==digest) { found=&s; break; }
-            }
+            found=request.snapshot->index->digest(*request.snapshot,digest,r.size);
         }
         r.completeness="full"; r.analyzers="SHA-256,PATTERN"; r.outcome=found ? "signature_match" : "no_match";
         if(found) {
@@ -88,6 +82,7 @@ Job runJob(Request req,Progress progress) {
     auto report=[&](bool force=false) { if(progress && (force || throttle.elapsed()>=100)) { progress(job); throttle.restart(); } };
     auto cancelled=[&] { return req.cancel->load(std::memory_order_relaxed); };
     try {
+        if(!req.cancel) throw Error(QStringLiteral("Отсутствует токен отмены"));
         if(req.blockSize<4096 || req.blockSize>4*1024*1024) throw Error(QStringLiteral("Размер блока должен быть 4096..4194304 байт"));
         std::error_code sameError;
         if(absolute(req.storagePath)==absolute(req.signaturePath) || (std::filesystem::equivalent(nativePath(req.storagePath),nativePath(req.signaturePath),sameError) && !sameError))

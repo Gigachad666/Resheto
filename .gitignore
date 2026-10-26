@@ -6,3 +6,5 @@
 *.db-*
 *.db.sha256
 /aqtinstall.log
+!/distribution/working/versions/**/*.db
+!/distribution/working/versions/**/*.db.sha256

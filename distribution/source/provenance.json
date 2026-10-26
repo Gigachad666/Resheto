@@ -1,0 +1,10 @@
+{
+  "source_url": "https://raw.githubusercontent.com/romainmarcoux/malicious-hash/9e6be541abb33859f49c06d66cf7c97e54ab2bc4/full-hash-sha256-aa.txt",
+  "source_revision": "9e6be541abb33859f49c06d66cf7c97e54ab2bc4",
+  "source_sha256": "07bf75ab004da3f5f5d1b25e41a8e3544ea7b66255d27ec7536672cb1f5e3b60",
+  "acquired_utc": "2026-10-24T22:38:37.559Z",
+  "license": "MIT",
+  "license_url": "https://raw.githubusercontent.com/romainmarcoux/malicious-hash/9e6be541abb33859f49c06d66cf7c97e54ab2bc4/LICENSE",
+  "attribution": "Copyright (c) 2025 Romain MARCOUX; malicious-hash aggregate feed",
+  "limitations": "Агрегатор не предоставляет семейства, размер, время и первоисточник отдельного SHA-256. Только HASH; без PATTERN."
+}

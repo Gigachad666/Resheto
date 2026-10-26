@@ -2,6 +2,8 @@
 #include "core/database.h"
 #include "core/signatures.h"
 #include <QDir>
+#include <QComboBox>
+#include <QClipboard>
 #include <QFile>
 #include <QFontDatabase>
 #include <QJsonArray>
@@ -94,6 +96,33 @@ private slots:
             QTRY_VERIFY_WITH_TIMEOUT(window.findChild<QLabel *>("databaseState")->text().contains(QStringLiteral("Ошибка базы")),10000);
             QVERIFY(!start->isEnabled());
         }
+    }
+    void globalFilterSearchSortAndCopy() {
+        QTemporaryDir tmp(QDir::currentPath()+"/resheto-gui-global-XXXXXX"); QVERIFY(tmp.isValid()); const auto root=tmp.path();
+        const auto storage=root+"/history.db";
+        Job j; j.id="global-query"; j.path=root; j.started=now(); j.databaseVersion="control";
+        { Store store(storage); store.start(j);
+          for(int i=0;i<2101;++i) {
+            Result r; r.jobId=j.id; r.databaseVersion=j.databaseVersion; r.path=root+QStringLiteral("/папка с пробелом/%1").arg(i,4,10,QChar('0')); r.time=now(); r.size=8; r.identity="control"; r.outcome="no_match"; r.completeness="full"; r.analyzers="SHA-256,PATTERN";
+            ++j.results; ++j.checked;
+            if(i==2100) { ++j.matches; r.outcome="signature_match"; r.signatureId="control"; r.signatureName=QStringLiteral("Контроль"); r.signatureVersion="1"; r.basis=QStringLiteral("PATTERN, абсолютное смещение 4"); r.offset=4; j.detectionPath=r.path; j.detectionName=r.signatureName; }
+            store.append(r,j);
+          } j.finished=now(); j.state="completed"; store.finish(j);
+        }
+        Request req; req.storagePath=storage; MainWindow window(req); window.show();
+        auto *table=window.findChild<QTableWidget *>("results"); auto *filter=window.findChild<QComboBox *>("filter");
+        QTRY_COMPARE_WITH_TIMEOUT(table->rowCount(),200,10000);
+        filter->setCurrentIndex(1); QTRY_COMPARE_WITH_TIMEOUT(table->rowCount(),1,10000);
+        QCOMPARE(table->item(0,0)->text(),j.detectionPath); table->setCurrentCell(0,0);
+        QTest::mouseClick(window.findChild<QPushButton *>("copyPath"),Qt::LeftButton); QCOMPARE(QApplication::clipboard()->text(),j.detectionPath);
+        QTest::mouseClick(window.findChild<QPushButton *>("copyBasis"),Qt::LeftButton); QCOMPARE(QApplication::clipboard()->text(),QStringLiteral("PATTERN, абсолютное смещение 4"));
+        QVERIFY(window.grab().save(QDir::currentPath()+"/gui-global-preview.png"));
+        filter->setCurrentIndex(0); auto *search=window.findChild<QLineEdit *>("search"); search->setText(QStringLiteral("папка с пробелом/2100")); QTRY_COMPARE_WITH_TIMEOUT(table->rowCount(),1,10000);
+        // Дожидаемся завершения debounce, затем проверяем содержимое.
+        QTRY_VERIFY_WITH_TIMEOUT(!window.view_.valid() && table->rowCount()==1 && table->item(0,0)->text()==j.detectionPath,10000);
+        search->clear(); window.findChild<QComboBox *>("sort")->setCurrentIndex(1); window.findChild<QComboBox *>("direction")->setCurrentIndex(1);
+        QTRY_COMPARE_WITH_TIMEOUT(table->rowCount(),200,10000); QCOMPARE(table->item(0,0)->text(),j.detectionPath);
+        filter->setCurrentIndex(2); QTRY_COMPARE_WITH_TIMEOUT(table->rowCount(),0,10000);
     }
 };
 QTEST_MAIN(GuiTests)
