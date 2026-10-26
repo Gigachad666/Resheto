@@ -1,3 +1,4 @@
+﻿#Requires -Version 7.0
 param([Parameter(Mandatory=$true)][string]$Bin,[Parameter(Mandatory=$true)][string]$Output)
 $ErrorActionPreference='Stop'
 if(Test-Path -LiteralPath $Output) { throw 'Нужен новый каталог измерений' }

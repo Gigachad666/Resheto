@@ -7,84 +7,88 @@
 - HASH и PATTERN: маски, фиксированное смещение, ограничения размера, совпадения между блоками.
 - Обход каталогов, отмена, обработка ошибок и сохранение истории в SQLite.
 - GUI: фильтры «Все / Совпадения / Не проверены», поиск по пути, сортировка, копирование пути и основания.
-- Рабочая база: **11 632 уникальных SHA-256** из [malicious-hash](https://github.com/romainmarcoux/malicious-hash), MIT. Контрольные правила и синтетическая нагрузка хранятся отдельно.
+- Рабочая база: **11 632 уникальных SHA-256** из [malicious-hash](https://github.com/romainmarcoux/malicious-hash), MIT. Контрольные правила и нагрузка отделены от неё.
 - Публичная цель `Resheto::Core` и отдельный пример её подключения без GUI и Qt Test.
+
+## Запуск
+
+Из корня проекта в обычном Windows PowerShell 5.1 или PowerShell 7, после сборки:
+
+```powershell
+.\scripts\start.ps1 -Control
+```
+
+Скрипт сам подключит локальный Qt, один раз подготовит безопасные файлы в `build/manual/control` и откроет GUI с заполненными полями. Нажмите «Начать»: ожидается **11 проверенных файлов и 5 совпадений**. При повторном запуске данные не пересоздаются. Если сборка в другом каталоге, добавьте `-Bin build/final-20261025/Release`.
+
+Для проверки своих файлов с рабочей базой:
+
+```powershell
+.\scripts\start.ps1
+```
+
+Выберите объект кнопкой «Файл…»/«Каталог…» и нажмите «Начать». В этом режиме используется рабочая база из `distribution/working/current.json`.
+
+| Поле GUI | Что в нём |
+| --- | --- |
+| Объект | Файл или каталог для проверки; в контроле — `build/manual/control/fixtures` |
+| Сигнатуры | **Одна** база правил: `build/manual/control/signatures.db` для контроля либо `distribution/working/current.json` для работы |
+| История проверок | Файл результатов `build/manual/results.db`; он и каталог создаются автоматически |
+
+История сохраняется после перезапуска. Фильтры и сортировка применяются ко всему заданию, таблица показывает по 200 строк. Поиск пути учитывает регистр. Во время сканирования обновляется первая страница.
+
+`demo-run` и `demo-check` — оставшиеся одинаковые контрольные копии предыдущих проверок. Для запуска они не нужны. Папки внутри `build` также содержат результаты отдельных тестов, не дополнительные обязательные базы. `current.json` — указатель на выбранную рабочую версию; перечислять все signatures.db в GUI не нужно.
 
 ## Как устроено
 
-Файл читается блоками: одновременно вычисляется SHA-256 и ищутся шаблоны. Для хешей используется индекс digest, для шаблонов — общий автомат Ахо–Корасик по значимым фрагментам с проверкой полного совпадения. Задание удерживает неизменяемый снимок базы. GUI вызывает ядро в рабочем потоке; SQL, поиск и обход находятся в библиотеке.
+Файл читается блоками: одновременно вычисляется SHA-256 и ищутся шаблоны. Для хешей используется индекс digest, для шаблонов — общий автомат Ахо–Корасик с проверкой полного кандидата. Задание удерживает неизменяемый снимок базы. GUI вызывает ядро в рабочем потоке; SQL, поиск и обход находятся в библиотеке.
 
 ```text
 src/core/          анализ, обход, сигнатуры, импорт, история, контроллер
 src/gui/           окно Qt Widgets
 src/cli.cpp        консоль; prepare/import_main/benchmark — утилиты
 examples/consumer/ отдельный потребитель библиотеки
-/tests, /scripts   проверки и воспроизводимые сценарии
-/distribution      рабочая база, исходный снимок и лицензия
-/data              собственные контрольные правила
-/docs              подробности реализации и проверки
+tests/, scripts/   проверки, подготовка и запуск
+distribution/      рабочая база, исходный снимок и лицензия
+data/, docs/       контрольные правила и документация
 ```
 
-## Сборка
+## Сборка и проверки
 
-Нужны CMake 3.21+, C++20, Qt 6.2–6.x с Core/Sql, Widgets и Test, плагин QSQLITE. Проверено на Windows 11: MSVC 2022, Qt 6.8.3, Release и Debug. Для Windows установите Visual Studio с компонентами C++ и Qt MSVC 2022 x64; укажите свой путь Qt:
+Нужны CMake 3.21+, C++20, Qt 6.2–6.x (Core/Sql, Widgets, Test), QSQLITE. На Windows проверены MSVC 2022 и Qt 6.8.3. Укажите путь своего SDK; здесь локально установлен `$PWD/.tools/qt/6.8.3/msvc2022_64`:
 
 ```powershell
-$env:QT_ROOT='C:/Qt/6.8.3/msvc2022_64'
-$env:PATH="$env:QT_ROOT/bin;$env:PATH"
+$env:QT_ROOT="$PWD/.tools/qt/6.8.3/msvc2022_64"
 cmake -S . -B build/windows -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="$env:QT_ROOT"
 cmake --build build/windows --config Release --parallel 4
+$env:PATH="$env:QT_ROOT/bin;$env:PATH"
 ctest --test-dir build/windows -C Release --output-on-failure
 ```
 
-Для Debug замените `Release` на `Debug`. Для одной библиотеки добавьте при конфигурации `-DRESHETO_BUILD_GUI=OFF -DRESHETO_BUILD_TOOLS=OFF -DBUILD_TESTING=OFF`: Widgets и Qt Test не нужны.
+Для Debug замените `Release` на `Debug`. Для одной библиотеки: `-DRESHETO_BUILD_GUI=OFF -DRESHETO_BUILD_TOOLS=OFF -DBUILD_TESTING=OFF`.
 
-Ubuntu 22.04 — команды сохранены, **платформа пока не проверена**:
+Ubuntu 22.04 пока не проверена: установите `build-essential cmake ninja-build qt6-base-dev qt6-base-dev-tools libqt6sql6-sqlite qt6-qpa-plugins`, затем выполните `cmake --preset release`, `cmake --build --preset release --parallel 4`, `ctest --preset release`.
 
-```bash
-sudo apt install build-essential cmake ninja-build qt6-base-dev qt6-base-dev-tools libqt6sql6-sqlite qt6-qpa-plugins
-cmake --preset release
-cmake --build --preset release --parallel 4
-ctest --preset release
-```
-
-## Запуск и работа
-
-Из корня проекта, PowerShell. Подготовка создаёт безопасные файлы в новом каталоге:
+Автоматический показ с проверкой обеих баз, ошибок, отмены и истории:
 
 ```powershell
-$bin='./build/windows/Release'
-& "$bin/resheto-prepare.exe" --source data/demo_signatures.json --output build/check
-& "$bin/resheto.exe" --path build/check/fixtures --db distribution/working/current.json --storage build/check/results.db
+.\scripts\demo.ps1 -Output build/show-new
+.\scripts\demo-results.ps1 -Output build/show-many-new
 ```
 
-В GUI выберите файл или каталог, базу и нажмите «Начать». «Остановить» запрашивает отмену; история остаётся после перезапуска. Фильтры и сортировка работают по всему заданию, таблица показывает по 200 строк. Поиск пути учитывает регистр. Во время сканирования обновляется первая страница.
+Выходные каталоги этих двух проверок должны отсутствовать. Второй сценарий сохраняет 2101 результат с одним совпадением для показа глобального фильтра. Скрипты содержат UTF-8 BOM для PowerShell 5.1; политика выполнения ОС не меняется.
 
-Рабочая база на этих безопасных файлах не даёт совпадений. Для наглядной проверки выберите `build/check/signatures.db`: тем же модулем будут найдены **5 совпадений в 11 файлах**. Через консоль:
+CLI: `resheto-cli.exe --path <объект> --db <база> --storage <история> --json`; `--last --storage <история> --json` читает сохранённое задание. Родительский каталог явного `--storage` у CLI должен существовать. Коды: **0** — совпадений нет, **1** — есть, **2** — ошибка/неполная проверка, **3** — отмена. Приоритет: ошибка → отмена → обнаружение.
+
+## Рабочая база и ограничения
+
+В `distribution/source` сохранены источник и MIT-лицензия. Ревизия `9e6be541abb33859f49c06d66cf7c97e54ab2bc4`: 11 636 строк, четыре дубля, **11 632 HASH, 0 PATTERN**. Офлайн-импорт и замена:
 
 ```powershell
-& "$bin/resheto-cli.exe" --path build/check/fixtures --db build/check/signatures.db --storage build/check/results.db --json
-& "$bin/resheto-cli.exe" --last --storage build/check/results.db --json
+./build/windows/Release/resheto-import.exe --format sha256-lines --input distribution/source/full-hash-sha256-aa.txt --provenance distribution/source/provenance.json --repository build/new-working --version malicious-hash-9e6be541abb33859
 ```
 
-Коды CLI: **0** — совпадений нет, **1** — есть, **2** — ошибка/неполная проверка, **3** — отмена. Приоритет: ошибка → отмена → обнаружение. `--non-recursive` отключает подкаталоги; `--json` выдаёт JSON Lines. На Linux исполняемые файлы находятся в `build/release`, без `.exe`.
+При ошибке прежняя версия сохраняется, текущее задание использует свой снимок. Сетевое получение метаданных запускается отдельно: `./scripts/fetch-signatures.ps1 -Output build/new-source`. [Подробности источника и возврата](docs/signature_sources.md).
 
-## Рабочая база и обновление
+Отсутствие совпадения не доказывает безопасность. Рабочая база распознаёт точные хеши, источник не предоставляет семейства и первоисточник каждого файла. Архивы, служба, IPC, эвристика, наблюдение, процессы, сеть и карантин не реализованы. Linux, настоящий NTFS ACL/заполненный диск и перенос без SDK отдельно не проверены.
 
-Текущий выбор — `distribution/working/current.json`. Рядом с выбранной SQLite лежат checksum, manifest и исходный снимок. Закреплена ревизия `9e6be541abb33859f49c06d66cf7c97e54ab2bc4`: 11 636 строк, четыре дубля, **11 632 HASH, 0 PATTERN**. Лицензия и сведения об источнике — в `distribution/source`.
-
-Офлайн-импорт готового снимка:
-
-```powershell
-& "$bin/resheto-import.exe" --format sha256-lines --input distribution/source/full-hash-sha256-aa.txt --provenance distribution/source/provenance.json --repository build/new-working --version malicious-hash-9e6be541abb33859
-```
-
-Для замены повторите импорт в тот же repository с новым снимком/версией, затем используйте его `current.json`. При ошибке прежняя база сохраняется; начатое задание заканчивает со старым снимком. Получение метаданных запускается отдельно: `./scripts/fetch-signatures.ps1 -Output build/new-source`. [Формат, происхождение, замена и возврат](docs/signature_sources.md).
-
-## Проверки и ограничения
-
-Новые Release/Debug: **5/5 групп CTest**, внешний потребитель и нативные GUI-тесты прошли. Обычный symlink пропущен из-за прав ОС; junction проверен. Профиль **100 000 HASH + 1 000 PATTERN**: 64 МиБ при блоке 64 КиБ — 1,049 с, загрузка — 2,097 с, пик процесса — 89,4 MiB. Это один синтетический прогон, не оценка покрытия угроз.
-
-Отсутствие совпадения не доказывает безопасность. Рабочий источник даёт только хеши, без семейств и первоисточника каждого файла. Архивы не распаковываются; служба, IPC, эвристика, наблюдение, процессы, сеть и карантин не реализованы. Linux, настоящий NTFS ACL/заполненный диск и перенос без SDK отдельно не проверены.
-
-Подробности: [устройство](docs/implementation.md), [подключение библиотеки](docs/integration.md), [проверки](docs/verification.md), [замеры](docs/performance.md), [показ на 5–7 минут](docs/lab3_demo.md), [ручной EICAR](docs/eicar_manual.md).
+Подробности: [устройство](docs/implementation.md), [встраивание](docs/integration.md), [проверки](docs/verification.md), [замеры](docs/performance.md), [показ](docs/lab3_demo.md), [ручной EICAR](docs/eicar_manual.md). Измерения 100000 HASH + 1000 PATTERN относятся к синтетическому профилю, не к покрытию угроз.

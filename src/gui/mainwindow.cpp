@@ -26,13 +26,18 @@ MainWindow::MainWindow(const Request &defaults) {
     auto *title=new QLabel(QStringLiteral("АС Решето")); title->setStyleSheet("font-size:24px; font-weight:600"); layout->addWidget(title);
     layout->addWidget(new QLabel(QStringLiteral("Ручная проверка файлов по локальным сигнатурам")));
     auto *grid=new QGridLayout; layout->addLayout(grid);
-    path_=new QLineEdit(defaults.path); path_->setObjectName("path"); path_->setAccessibleName(QStringLiteral("Путь проверки"));
-    db_=new QLineEdit(defaults.signaturePath); db_->setObjectName("database"); db_->setAccessibleName(QStringLiteral("База сигнатур"));
-    storage_=new QLineEdit(defaults.storagePath); storage_->setObjectName("storage"); storage_->setAccessibleName(QStringLiteral("Хранилище результатов"));
+    path_=new QLineEdit(defaults.path.isEmpty()?QString():absolute(defaults.path)); path_->setObjectName("path"); path_->setAccessibleName(QStringLiteral("Путь проверки"));
+    path_->setPlaceholderText(QStringLiteral("Файл или каталог, который нужно проверить"));
+    db_=new QLineEdit(defaults.signaturePath.isEmpty()?QString():absolute(defaults.signaturePath)); db_->setObjectName("database"); db_->setAccessibleName(QStringLiteral("База сигнатур"));
+    db_->setPlaceholderText(QStringLiteral("Одна база правил: current.json либо signatures.db"));
+    storage_=new QLineEdit(defaults.storagePath.isEmpty()?QString():absolute(defaults.storagePath)); storage_->setObjectName("storage"); storage_->setAccessibleName(QStringLiteral("Хранилище результатов"));
+    storage_->setToolTip(QStringLiteral("Здесь сохраняются результаты, а не сигнатуры. Новый файл и его каталог будут созданы при запуске проверки."));
     auto *file=new QPushButton(QStringLiteral("Файл…")); auto *folder=new QPushButton(QStringLiteral("Каталог…")); auto *base=new QPushButton(QStringLiteral("Выбрать…"));
     grid->addWidget(new QLabel(QStringLiteral("Объект")),0,0); grid->addWidget(path_,0,1); grid->addWidget(file,0,2); grid->addWidget(folder,0,3);
     grid->addWidget(new QLabel(QStringLiteral("Сигнатуры")),1,0); grid->addWidget(db_,1,1,1,2); grid->addWidget(base,1,3);
-    grid->addWidget(new QLabel(QStringLiteral("Результаты SQLite")),2,0); grid->addWidget(storage_,2,1,1,3);
+    grid->addWidget(new QLabel(QStringLiteral("История проверок")),2,0); grid->addWidget(storage_,2,1,1,3);
+    auto *hint=new QLabel(QStringLiteral("Сигнатуры — правила поиска; история — ваши результаты. Для задания выбирается одна база сигнатур."));
+    hint->setWordWrap(true); grid->addWidget(hint,3,0,1,4);
     databaseState_=new QLabel(QStringLiteral("База не выбрана")); databaseState_->setObjectName("databaseState"); databaseState_->setWordWrap(true); layout->addWidget(databaseState_);
     auto *actions=new QHBoxLayout; layout->addLayout(actions);
     recursive_=new QCheckBox(QStringLiteral("Включая подкаталоги")); recursive_->setChecked(defaults.recursive); actions->addWidget(recursive_);
@@ -97,6 +102,11 @@ void MainWindow::start() {
     if(controller_.busy() || !databaseReady_ || view_.valid() || probe_.valid()) return;
     Request r; r.id=QUuid::createUuid().toString(QUuid::WithoutBraces); r.path=path_->text(); r.signaturePath=db_->text(); r.storagePath=storage_->text(); r.recursive=recursive_->isChecked();
     if(r.path.trimmed().isEmpty() || r.storagePath.trimmed().isEmpty()) { summary_->setText(QStringLiteral("Укажите путь и хранилище")); return; }
+    if(!QFileInfo::exists(r.path)) {
+        summary_->setText(QStringLiteral("Объект проверки не найден: %1. Выберите существующий файл/каталог. Если это контрольные данные, сначала выполните их подготовку.").arg(absolute(r.path))); return;
+    }
+    try { r.storagePath=Store::preparePath(r.storagePath); storage_->setText(r.storagePath); }
+    catch(const Error &e) { summary_->setText(e.message); return; }
     if(!controller_.submit(r)) { summary_->setText(QStringLiteral("Очередь задания занята")); return; }
     historyError_.clear(); historyErrorLabel_->clear(); historyErrorLabel_->hide(); stoppedByHistoryError_=false;
     jobId_=r.id; resetPage(); knownResults_=-1; running_=true; wantLatest_=false; needRead_=false;

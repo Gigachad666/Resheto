@@ -41,9 +41,10 @@ static std::optional<qint64> number(const QVariant &v) {
 std::shared_ptr<const Snapshot> loadSignatures(const QString &path) {
     const auto file=resolveSignaturePath(path);
     require(!QFileInfo::exists(file+"-wal") && !QFileInfo::exists(file+"-journal"),QStringLiteral("база имеет активный WAL/journal; завершите запись и подготовьте manifest"));
-    require(QFileInfo(file).isFile() && QFileInfo(file).size()<=256*1024*1024,QStringLiteral("база отсутствует либо больше 256 МиБ"));
+    require(QFileInfo(file).isFile(),QStringLiteral("файл базы не найден: ")+file);
+    require(QFileInfo(file).size()<=256*1024*1024,QStringLiteral("база больше 256 МиБ: ")+file);
     QFile manifest(file+".sha256");
-    require(manifest.open(QIODevice::ReadOnly) && manifest.size()<=128,QStringLiteral("нет manifest .sha256"));
+    require(manifest.open(QIODevice::ReadOnly) && manifest.size()<=128,QStringLiteral("нет/не читается контрольная сумма: ")+file+".sha256");
     const auto expected=manifest.readAll().trimmed().toLower();
     require(QRegularExpression("^[0-9a-f]{64}$").match(QString::fromLatin1(expected)).hasMatch(),QStringLiteral("формат manifest"));
     const auto before=fileHash(file);

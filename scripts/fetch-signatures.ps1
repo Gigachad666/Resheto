@@ -1,8 +1,9 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][string]$Output,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$Revision='9e6be541abb33859f49c06d66cf7c97e54ab2bc4'
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'common.ps1')
 if (Test-Path -LiteralPath $Output) { throw 'Выберите новый каталог -- снимок не перезаписывается' }
 New-Item -ItemType Directory -Path $Output | Out-Null
 $base="https://raw.githubusercontent.com/romainmarcoux/malicious-hash/$Revision"
@@ -20,5 +21,5 @@ $provenance=[ordered]@{
     attribution='Copyright (c) 2025 Romain MARCOUX; malicious-hash aggregate feed'
     limitations='Агрегатор не предоставляет семейства, размер, время и первоисточник отдельного SHA-256. Только HASH; без PATTERN.'
 }
-$provenance | ConvertTo-Json | Set-Content -Encoding utf8NoBOM (Join-Path $Output 'provenance.json')
+Save-ReshetoUtf8 ([IO.Path]::GetFullPath((Join-Path $Output 'provenance.json'))) ($provenance | ConvertTo-Json)
 Write-Output "Сохранён снимок $Revision; проверьте LICENSE перед импортом."

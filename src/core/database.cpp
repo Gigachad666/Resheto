@@ -1,17 +1,23 @@
 #include "database.h"
 #include <QJsonDocument>
+#include <QDir>
+#include <QFileInfo>
 #include <QSqlError>
 #include <QUuid>
 
 namespace resheto {
 Database::Database(const QString &path, bool ro) : name_(QUuid::createUuid().toString()) {
+    if(path!=":memory:") {
+        const auto parent=QFileInfo(absolute(path)).absolutePath();
+        if(!QDir(parent).exists()) throw Error(QStringLiteral("Каталог базы данных не существует: %1. Путь к базе: %2").arg(parent,absolute(path)));
+    }
     db_=QSqlDatabase::addDatabase("QSQLITE",name_);
     db_.setDatabaseName(path);
     db_.setConnectOptions(ro ? "QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=3000" : "QSQLITE_BUSY_TIMEOUT=3000");
     if(!db_.open()) {
         const auto message=db_.lastError().text();
         db_=QSqlDatabase(); QSqlDatabase::removeDatabase(name_);
-        throw Error(QStringLiteral("SQLite: ")+message);
+        throw Error(QStringLiteral("SQLite: не удалось открыть базу %1. Проверьте путь и права доступа. Техническая причина: %2").arg(path,message));
     }
 }
 Database::~Database() { db_.close(); db_=QSqlDatabase(); QSqlDatabase::removeDatabase(name_); }
@@ -31,6 +37,14 @@ static QJsonObject decode(const QVariant &value) {
     QJsonParseError error; const auto doc=QJsonDocument::fromJson(value.toByteArray(),&error);
     if(error.error!=QJsonParseError::NoError || !doc.isObject()) throw Error(QStringLiteral("Ожидается корректный JSON-объект"));
     return doc.object();
+}
+QString Store::preparePath(const QString &path) {
+    if(path.trimmed().isEmpty()) throw Error(QStringLiteral("Укажите файл истории результатов"));
+    const auto file=absolute(path);
+    if(QFileInfo(file).isDir()) throw Error(QStringLiteral("В поле истории нужен файл SQLite, а не каталог: %1").arg(file));
+    const auto parent=QFileInfo(file).absolutePath();
+    if(!QDir().mkpath(parent)) throw Error(QStringLiteral("Не удалось создать каталог истории: %1. Проверьте путь и права записи.").arg(parent));
+    return file;
 }
 Store::Store(const QString &path,bool readOnly) : db_(path,readOnly) {
     db_.exec("PRAGMA foreign_keys=ON");

@@ -5,6 +5,7 @@
 #include <QComboBox>
 #include <QClipboard>
 #include <QFile>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -27,6 +28,23 @@ private slots:
         const int font=QFontDatabase::addApplicationFont(qEnvironmentVariable("WINDIR")+"/Fonts/segoeui.ttf");
         QVERIFY(font>=0); QApplication::setFont(QFont(QFontDatabase::applicationFontFamilies(font).front(),10));
 #endif
+    }
+    void missingPreparedDataAndNewHistoryDirectory() {
+        QTemporaryDir tmp(QDir::currentPath()+"/resheto-gui-paths-XXXXXX"); QVERIFY(tmp.isValid()); const auto root=tmp.path();
+        auto put=[](const QString &path,const QByteArray &bytes){QFile f(path); if(!f.open(QIODevice::WriteOnly) || f.write(bytes)!=bytes.size()) throw Error("fixture write");};
+        put(root+"/source.json",R"({"version":"test-paths","signatures":[{"id":"test","name":"ТЕСТ","kind":"PATTERN","value":"aa00bb","version":"1","enabled":1}]})");
+        createSignatures(root+"/source.json",root+"/signatures.db");
+        Request req; req.path=root+"/missing/fixtures"; req.signaturePath=root+"/signatures.db"; req.storagePath=root+"/new/nested/results.db";
+        MainWindow window(req); window.show(); auto *start=window.findChild<QPushButton *>("start"); auto *summary=window.findChild<QLabel *>("summary");
+        QTRY_VERIFY_WITH_TIMEOUT(start->isEnabled(),10000); QTest::mouseClick(start,Qt::LeftButton);
+        QVERIFY(summary->text().contains(QStringLiteral("Объект проверки не найден"))); QVERIFY(!window.controller_.busy()); QVERIFY(!QFileInfo::exists(root+"/new"));
+        put(root+"/file",QByteArray::fromHex("aa00bb")); window.path_->setText(root+"/file");
+        QTest::mouseClick(start,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(start->isEnabled(),10000);
+        QVERIFY2(summary->text().contains(QStringLiteral("Завершено")),qPrintable(summary->text())); QVERIFY(QFileInfo::exists(req.storagePath));
+        { Store history(req.storagePath,true); QCOMPARE(history.latest()->matches,1); }
+        window.storage_->setText(root); QTest::mouseClick(start,Qt::LeftButton);
+        QVERIFY(summary->text().contains(QStringLiteral("не каталог"))); QVERIFY(!window.controller_.busy());
+        QVERIFY(window.grab().save(QDir::currentPath()+"/gui-paths-preview.png"));
     }
     void historyReadFailureDuringScanStaysVisible() {
         QTemporaryDir tmp(QDir::currentPath()+"/resheto-gui-error-XXXXXX"); QVERIFY(tmp.isValid()); const auto root=tmp.path();

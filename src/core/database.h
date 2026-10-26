@@ -31,6 +31,8 @@ public:
 class Store {
     Database db_;
 public:
+    // Явная подготовка выбранного пользователем пути: создаёт только родительский каталог.
+    static QString preparePath(const QString &path);
     explicit Store(const QString &path, bool readOnly = false);
     void start(const Job &job);
     void append(const Result &result, const Job &progress);

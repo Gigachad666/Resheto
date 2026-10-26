@@ -21,7 +21,7 @@ SOREL-20M был отклонён: отдельные Terms and Conditions of Us
 
 ## Получение и воспроизводимый офлайн-импорт
 
-Из корня репозитория, PowerShell 7; в PATH — Qt bin:
+Из корня репозитория, Windows PowerShell 5.1 или PowerShell 7; в PATH — Qt bin:
 
 ```powershell
 # Единственная сетевая операция, запускается явно; новый каталог:

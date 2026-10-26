@@ -1,3 +1,35 @@
+# Исправление запуска — 26.10.2026
+
+Воспроизведена ошибка пользователя в штатном Windows PowerShell **5.1.26100.9711**: UTF-8 без BOM у demo.ps1 давал 4 ParserError, подготовка не выполнялась. Следующий запуск GUI получал несуществующий каталог истории и ошибку SQLite. В demo-results дополнительно использовалось неподдерживаемое в 5.1 имя кодировки utf8NoBOM. Прежняя проверка только в PowerShell 7 этого не обнаружила.
+
+Исправления: UTF-8 BOM у всех PowerShell-скриптов; явное UTF-8 чтение stdout/stderr дочерних C++ программ без зависимости от кодовой страницы оболочки; запись JSON через .NET UTF8Encoding. Сценарии сохраняют проверки кодов и точное сравнение истории. Новый scripts/start.ps1 открывает рабочую конфигурацию либо (-Control) один раз готовит и переиспользует build/manual/control; история — build/manual/results.db. Обе старые базы demo-run/signatures.db и demo-check/signatures.db имеют одинаковый SHA-256 B663D8DEB4403B9A5CD7F9E398B2AE53E19CBB1BC2674CBCCF12532FE18F689E и для нового запуска не нужны; они не удалялись.
+
+GUI нормализует отображаемые пути, поясняет три поля и одну выбранную базу сигнатур. Перед запуском проверяет существование объекта; новый родительский каталог истории создаётся через Store::preparePath. Store/CLI без такого явного вызова сохраняют прежнее поведение. Ошибки открытия содержат русское объяснение, путь и техническую причину SQLite. Схемы БД и алгоритмы обнаружения не менялись.
+
+Проверено на Windows 11/Qt 6.8.3/MSVC 2022:
+
+- До исправлений Parser::ParseFile в PowerShell 5.1: errors=4; после — errors=0 для всех scripts/*.ps1.
+- tests/powershell_scripts.ps1 выполнен в Windows PowerShell 5.1 и PowerShell 7.6.5: безопасный показ 11/5, большой показ 2101/1, точный Unicode-путь в JSON, replay, отказ перезаписи; новый запуск -Control -NoLaunch и его повтор без переписи базы. Тест использует новые временные каталоги с кириллицей и пробелами.
+- GUI: новый missingPreparedDataAndNewHistoryDirectory проверяет понятную ошибку отсутствующего объекта до создания истории, реальное обнаружение с новым вложенным каталогом истории и отказ вместо файла-каталога. Прежние GUI/история/отмена сохранены, GUI QtTest — 6 passed/0 failed.
+- Сначала целевые gui/scripts-powershell51: 2/2; затем полная сборка build/windows Release и итоговый CTest: **6/6, 39,71 с**. В полном наборе старые core/audit/cli/completion проходят; создание обычного symlink по-прежнему пропущено ОС. Новый Debug-прогон на 26.10 не выполнялся; проверка Debug 25.10 описана ниже.
+- build/manual/control подготовлен фактической командой start.ps1 -Control -NoLaunch. Новый CLI на тех же 11 безопасных файлах: контрольная база — 5 совпадений/0 ошибок; рабочая — 0 совпадений/0 ошибок. Проверочные истории — build/manual/control-check.db и working-check.db; пользовательские области не сканировались.
+- Обновлённый интерфейс проверен QtTest offscreen, снимок build/windows/gui-preview.png визуально просмотрен. Нативный ручной показ человеком этого исправления отдельно не подтверждён.
+
+Реальные команды (из корня; PATH содержит .tools/qt/6.8.3/msvc2022_64/bin):
+
+```powershell
+./.tools/python/cmake/data/bin/cmake.exe -S . -B build/windows -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="$PWD/.tools/qt/6.8.3/msvc2022_64"
+./.tools/python/cmake/data/bin/cmake.exe --build build/windows --config Release --parallel 4
+./.tools/python/cmake/data/bin/ctest.exe --test-dir build/windows -C Release -R '^(gui|scripts-powershell51)$' --output-on-failure
+./.tools/python/cmake/data/bin/ctest.exe --test-dir build/windows -C Release --output-on-failure
+powershell.exe -NoProfile -NonInteractive -File tests/powershell_scripts.ps1 -Bin build/windows/Release -WorkDir build/windows
+pwsh -NoProfile -NonInteractive -File tests/powershell_scripts.ps1 -Bin build/windows/Release -WorkDir build/windows
+powershell.exe -NoProfile -NonInteractive -File scripts/start.ps1 -Control -NoLaunch
+```
+
+Выход из песочницы потребовался для MSVC/Windows PowerShell: внутри .ps1 получил AuthorizationManager check failed из-за недоступного чтения реестра. Политика выполнения/защитные настройки не менялись. Первый полный CTest обнаружил зависимость новой проверки от автозагрузки Get-FileHash в унаследованном окружении PowerShell; вместо неё тест сравнивает полные байты базы до/после. Целевая проверка и полный CTest затем прошли, прежний неуспешный отчёт не скрывается (LastTestsFailed.log может содержать предыдущий запуск). Скрипт measure.ps1 явно требует PowerShell 7; большой замер повторно не запускался, алгоритм поиска не менялся. Источник/рабочая БД не изменялись, данные не скачивались.
+
+---
 # Проверка реализации — 25.10.2026
 
 Это новый запуск реализации актуального TASK_LAB3.md, а не прежнее обновление требований. Исходный пользовательский код/изменения сохранены; ТЗ/контекст не переписывались. Результаты ниже получены на Windows 11 x64, MSVC 19.44.35228, Qt 6.8.3, SQLite 3.49.1, CMake 3.31.6. Linux отложен пользователем.
