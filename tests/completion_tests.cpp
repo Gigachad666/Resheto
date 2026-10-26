@@ -68,9 +68,12 @@ private slots:
         // Ожидаемые digest и строки закреплены независимо от импортера и алгоритма поиска.
         const QList<QPair<int,QByteArray>> expected={{1,"fffa96bbcf4e075c3c1af00d88c598b01683d411ff81a88ac654f98d21deb1b5"},{5819,"7f3169d20172caa22b51cc99c389ff6b87fead570cc656388335c25a062e0267"},{11636,"00000045ef6ec5eb590ef16ef79d467734ea7d9144d7990511514f08ed3cb673"}};
         const auto lines=bytes(source+"full-hash-sha256-aa.txt").split('\n'); Database db(snap->path,true);
+        const auto working=loadSignatures(QString::fromUtf8(RESHETO_SOURCE_DIR)+"/distribution/working/current.json");
+        QCOMPARE(working->purpose,"working"); QCOMPARE(working->hashCount,11632); QCOMPARE(working->patternCount,0);
         for(const auto &e:expected) {
             QCOMPARE(lines[e.first-1].trimmed(),e.second); const auto *sig=snap->index->digest(*snap,QByteArray::fromHex(e.second),123); QVERIFY(sig); QCOMPARE(sig->value.toHex(),e.second);
             auto q=db.exec("SELECT source_line,source_value FROM provenance WHERE signature_id=?",{sig->id}); QVERIFY(q.next()); QCOMPARE(q.value(0).toInt(),e.first); QCOMPARE(q.value(1).toByteArray(),e.second);
+            const auto *shipped=working->index->digest(*working,QByteArray::fromHex(e.second),123); QVERIFY(shipped); QCOMPARE(shipped->value.toHex(),e.second);
         }
     }
     void offlineImportAtomicSelection() {

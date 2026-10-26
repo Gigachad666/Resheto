@@ -1,6 +1,6 @@
 # Масштаб и измерения
 
-Измерено 25.10.2026, Release MSVC 19.44.35228, Qt 6.8.3, Windows 11 x64 (10.0.26200), AMD Ryzen 7 8845HS, физическая память 16 438 382 592 байта. Файлы на локальном D:. Модель накопителя не определялась. Последний прогон выполнен после сборок/тестов, без их параллельного запуска. Исходные JSON-измерения сохранены в `docs/measurements`, данные/SQLite — `build/final-20261025/measure`.
+Измерено 25.10.2026, Release MSVC 19.44.35228, Qt 6.8.3, Windows 11 x64 (10.0.26200), AMD Ryzen 7 8845HS, физическая память 16 438 382 592 байта. Файлы на локальном D:. Модель накопителя не определялась. Последний прогон выполнен после сборок/тестов, без их параллельного запуска. Исходные JSON-измерения сохранены в `docs/measurements`. Большие воспроизводимые данные/SQLite из build/final-20261025/measure удалены при согласованной чистке 26.10; повторная подготовка описана ниже.
 
 ## Профиль и бюджет
 
@@ -40,17 +40,17 @@ HASH — QHash digest → упорядоченные кандидаты с пр�
 PowerShell 7, Qt bin в PATH, из корня; каталог Output должен отсутствовать:
 
 ```powershell
-./scripts/measure.ps1 -Bin build/final-20261025/Release -Output build/performance-new
+./scripts/measure.ps1 -Bin build/windows/Release -Output build/performance-new
 ```
 
 Вручную (нужно самостоятельно ограничить процессы по времени):
 
 ```powershell
-./build/final-20261025/Release/resheto-benchmark.exe prepare build/performance-data
-./build/final-20261025/Release/resheto-benchmark.exe run build/performance-data large 64
-./build/final-20261025/Release/resheto-benchmark.exe run build/performance-data large 256
-./build/final-20261025/Release/resheto-benchmark.exe run build/performance-data small 64
-./build/final-20261025/Release/resheto-benchmark.exe run build/performance-data small 256
+./build/windows/Release/resheto-benchmark.exe prepare build/performance-data
+./build/windows/Release/resheto-benchmark.exe run build/performance-data large 64
+./build/windows/Release/resheto-benchmark.exe run build/performance-data large 256
+./build/windows/Release/resheto-benchmark.exe run build/performance-data small 64
+./build/windows/Release/resheto-benchmark.exe run build/performance-data small 256
 ```
 
 Скрипт сохраняет environment.json, prepare.json, четыре отчёта и stderr каждого процесса. Код 2 означает неверное ожидание или ошибку, не успешный замер. При новой сборке/изменении правил используйте новый каталог. Версия результата/имена данных не влияют на алгоритм сканера.

@@ -1,94 +1,118 @@
 # АС Решето
 
-Локальная проверка файлов и каталогов по SHA-256 и байтовым шаблонам. C++20, Qt 6, SQLite. Есть GUI, консоль и библиотека для подключения к другому приложению. Сканирование работает без сети и административных прав.
+Решето проверяет локальные файлы и каталоги по SHA-256 и байтовым шаблонам. Доступны графическое окно, консоль и C++-библиотека для встраивания. Проверка работает без сети, не запускает и не изменяет проверяемые файлы. Результаты сохраняются в SQLite.
 
-## Что реализовано
+## Сборка
 
-- HASH и PATTERN: маски, фиксированное смещение, ограничения размера, совпадения между блоками.
-- Обход каталогов, отмена, обработка ошибок и сохранение истории в SQLite.
-- GUI: фильтры «Все / Совпадения / Не проверены», поиск по пути, сортировка, копирование пути и основания.
-- Рабочая база: **11 632 уникальных SHA-256** из [malicious-hash](https://github.com/romainmarcoux/malicious-hash), MIT. Контрольные правила и нагрузка отделены от неё.
-- Публичная цель `Resheto::Core` и отдельный пример её подключения без GUI и Qt Test.
-
-## Запуск
-
-Из корня проекта в обычном Windows PowerShell 5.1 или PowerShell 7, после сборки:
+Нужны C++20, CMake 3.21+ и Qt 6.2–6.x: Core, Sql, Widgets, Test и драйвер QSQLITE. Проверены Windows 11 x64, Visual Studio 2022 и Qt 6.8.3 MSVC x64. Замените путь SDK на свой:
 
 ```powershell
+$env:QT_ROOT='C:/Qt/6.8.3/msvc2022_64'
+$env:PATH="$env:QT_ROOT/bin;$env:PATH"
+cmake -S . -B build/windows -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="$env:QT_ROOT"
+cmake --build build/windows --config Release --parallel 4
+$bin='./build/windows/Release'
+```
+
+Для локального SDK проекта путь Qt — `$PWD/.tools/qt/6.8.3/msvc2022_64`. Скрипты запуска поддерживают Windows PowerShell 5.1 и PowerShell 7.
+
+## Запуск и использование
+
+Команды выполняются из корня проекта:
+
+```powershell
+# Открыть GUI с рабочей базой, выбрать файл или каталог в окне:
+.\scripts\start.ps1
+# Сразу открыть обычный файл для проверки рабочей базой:
+.\scripts\start.ps1 -Path .\README.md
+# Подготовить безопасные примеры и открыть их с контрольной базой:
 .\scripts\start.ps1 -Control
 ```
 
-Скрипт сам подключит локальный Qt, один раз подготовит безопасные файлы в `build/manual/control` и откроет GUI с заполненными полями. Нажмите «Начать»: ожидается **11 проверенных файлов и 5 совпадений**. При повторном запуске данные не пересоздаются. Если сборка в другом каталоге, добавьте `-Bin build/final-20261025/Release`.
+Нажмите «Начать». «Остановить» запрашивает отмену. Фильтры «Все / Совпадения / Не проверены», поиск по пути и сортировка работают по всему заданию. Полный путь и основание обнаружения можно скопировать; история доступна после перезапуска.
 
-Для проверки своих файлов с рабочей базой:
-
-```powershell
-.\scripts\start.ps1
-```
-
-Выберите объект кнопкой «Файл…»/«Каталог…» и нажмите «Начать». В этом режиме используется рабочая база из `distribution/working/current.json`.
-
-| Поле GUI | Что в нём |
+| Поле окна | Назначение |
 | --- | --- |
-| Объект | Файл или каталог для проверки; в контроле — `build/manual/control/fixtures` |
-| Сигнатуры | **Одна** база правил: `build/manual/control/signatures.db` для контроля либо `distribution/working/current.json` для работы |
-| История проверок | Файл результатов `build/manual/results.db`; он и каталог создаются автоматически |
+| Объект | Файл или каталог, который нужно проверить |
+| Сигнатуры | Одна выбранная база правил: рабочая `distribution/working/current.json` или контрольная `build/manual/control/signatures.db` |
+| История проверок | Отдельная SQLite с результатами; по умолчанию у скрипта — `build/manual/results.db` |
 
-История сохраняется после перезапуска. Фильтры и сортировка применяются ко всему заданию, таблица показывает по 200 строк. Поиск пути учитывает регистр. Во время сканирования обновляется первая страница.
-
-`demo-run` и `demo-check` — оставшиеся одинаковые контрольные копии предыдущих проверок. Для запуска они не нужны. Папки внутри `build` также содержат результаты отдельных тестов, не дополнительные обязательные базы. `current.json` — указатель на выбранную рабочую версию; перечислять все signatures.db в GUI не нужно.
-
-## Как устроено
-
-Файл читается блоками: одновременно вычисляется SHA-256 и ищутся шаблоны. Для хешей используется индекс digest, для шаблонов — общий автомат Ахо–Корасик с проверкой полного кандидата. Задание удерживает неизменяемый снимок базы. GUI вызывает ядро в рабочем потоке; SQL, поиск и обход находятся в библиотеке.
-
-```text
-src/core/          анализ, обход, сигнатуры, импорт, история, контроллер
-src/gui/           окно Qt Widgets
-src/cli.cpp        консоль; prepare/import_main/benchmark — утилиты
-examples/consumer/ отдельный потребитель библиотеки
-tests/, scripts/   проверки, подготовка и запуск
-distribution/      рабочая база, исходный снимок и лицензия
-data/, docs/       контрольные правила и документация
-```
-
-## Сборка и проверки
-
-Нужны CMake 3.21+, C++20, Qt 6.2–6.x (Core/Sql, Widgets, Test), QSQLITE. На Windows проверены MSVC 2022 и Qt 6.8.3. Укажите путь своего SDK; здесь локально установлен `$PWD/.tools/qt/6.8.3/msvc2022_64`:
+Для CLI после сборки:
 
 ```powershell
-$env:QT_ROOT="$PWD/.tools/qt/6.8.3/msvc2022_64"
-cmake -S . -B build/windows -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="$env:QT_ROOT"
-cmake --build build/windows --config Release --parallel 4
-$env:PATH="$env:QT_ROOT/bin;$env:PATH"
-ctest --test-dir build/windows -C Release --output-on-failure
+New-Item -ItemType Directory -Force build/manual | Out-Null
+& "$bin/resheto-cli.exe" --path README.md --db distribution/working/current.json --storage build/manual/results.db --json
+& "$bin/resheto-cli.exe" --last --storage build/manual/results.db --json
 ```
 
-Для Debug замените `Release` на `Debug`. Для одной библиотеки: `-DRESHETO_BUILD_GUI=OFF -DRESHETO_BUILD_TOOLS=OFF -DBUILD_TESTING=OFF`.
+`--json` выдаёт JSON Lines, `--non-recursive` отключает подкаталоги. Коды завершения: **0** — совпадений нет, **1** — найдены, **2** — ошибка или неполная проверка, **3** — отмена. Родительский каталог истории у CLI должен существовать.
 
-Ubuntu 22.04 пока не проверена: установите `build-essential cmake ninja-build qt6-base-dev qt6-base-dev-tools libqt6sql6-sqlite qt6-qpa-plugins`, затем выполните `cmake --preset release`, `cmake --build --preset release --parallel 4`, `ctest --preset release`.
+## База сигнатур
 
-Автоматический показ с проверкой обеих баз, ошибок, отмены и истории:
+В поставке **11 632 уникальных SHA-256** из [malicious-hash](https://github.com/romainmarcoux/malicious-hash) Romain MARCOUX, лицензия MIT. Используется закреплённый снимок: версия базы `malicious-hash-9e6be541abb33859`. Исходные данные, лицензия и сведения о происхождении сохранены в `distribution/source`.
+
+`distribution/working/current.json` указывает на текущую SQLite. Рабочий источник содержит только HASH. Контрольная база для собственных безопасных файлов отдельно показывает HASH и PATTERN: точный поиск, маску, фиксированное смещение и переход между блоками.
+
+Для подготовки другой рабочей версии есть офлайн-импорт:
+
+```powershell
+& "$bin/resheto-import.exe" --format sha256-lines --input distribution/source/full-hash-sha256-aa.txt --provenance distribution/source/provenance.json --repository build/new-working --version malicious-hash-9e6be541abb33859
+```
+
+Повторно получить исходный снимок: `./scripts/fetch-signatures.ps1 -Output build/new-source`; для другой ревизии укажите `-Revision <commit>`. Импорт проверяет данные до переключения версии; при ошибке прежняя база сохраняется. Начатое задание использует свой неизменяемый снимок. [Обновление, выбор и возврат версии](docs/signature_sources.md).
+
+## Как проходит проверка
+
+**Запрос → снимок правил → чтение и поиск → результат файла → история и сводка задания.** GUI запускает ядро в рабочем потоке; поиск, обход каталогов и SQL находятся в библиотеке.
+
+Файл читается блоками: одновременно вычисляется SHA-256 и ищутся PATTERN. Хеш проверяется по индексу. Алгоритм Ахо–Корасик ищет опорные фрагменты множества шаблонов за один проход, затем проверяются полный шаблон, маска и ограничения. Хвост блока сохраняется для совпадений на границе. Ошибки и отмена отражаются в результате.
+
+| Где смотреть | За что отвечает |
+| --- | --- |
+| `src/core/model.h` | Типы запроса, снимка правил, результата файла и задания |
+| `src/core/controller.*`, `scanner.*` | Фоновый запуск, обход и проверка файлов |
+| `src/core/signatures.*`, `search.*`, `file_access.*` | Загрузка правил, поиск и доступ к файлу |
+| `src/core/database.*`, `import.*` | История SQLite и подготовка версий базы |
+| `src/gui/`, `src/cli.cpp` | Графическая и консольная оболочки одного ядра |
+| `tests/`, `scripts/`, `examples/consumer/` | Автотесты, сценарии запуска и пример встраивания |
+
+[Подробнее об устройстве](docs/implementation.md). Публичная цель — `Resheto::Core`, заголовок — `<core/api.h>`; [пример подключения](docs/integration.md) собирается без Widgets и Qt Test.
+
+## Проверки и показ
+
+Полный набор и целевые проверки GUI, скриптов запуска и рабочей базы:
+
+```powershell
+ctest --test-dir build/windows -C Release --output-on-failure
+ctest --test-dir build/windows -C Release -R '^(completion|gui|scripts-powershell51)$' --output-on-failure
+& "$bin/resheto-completion-tests.exe" realFeedProvenance
+```
+
+`realFeedProvenance` сверяет источник, импорт и поиск известных SHA-256 в рабочей поставке без загрузки вредоносных образцов. Скрипты запуска можно отдельно проверить в обеих версиях PowerShell:
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -File tests/powershell_scripts.ps1 -Bin build/windows/Release -WorkDir build/windows
+pwsh -NoProfile -NonInteractive -File tests/powershell_scripts.ps1 -Bin build/windows/Release -WorkDir build/windows
+```
+
+Для наглядного показа (выходные каталоги должны быть новыми):
 
 ```powershell
 .\scripts\demo.ps1 -Output build/show-new
 .\scripts\demo-results.ps1 -Output build/show-many-new
 ```
 
-Выходные каталоги этих двух проверок должны отсутствовать. Второй сценарий сохраняет 2101 результат с одним совпадением для показа глобального фильтра. Скрипты содержат UTF-8 BOM для PowerShell 5.1; политика выполнения ОС не меняется.
+Первый сценарий проверяет обе базы, ошибки, отмену и чтение истории. Второй сохраняет 2 101 результат с одним обнаружением для проверки фильтра. [Показ на 5–7 минут](docs/lab3_demo.md), [измерения производительности](docs/performance.md), [подробный отчёт проверок](docs/verification.md).
 
-CLI: `resheto-cli.exe --path <объект> --db <база> --storage <история> --json`; `--last --storage <история> --json` читает сохранённое задание. Родительский каталог явного `--storage` у CLI должен существовать. Коды: **0** — совпадений нет, **1** — есть, **2** — ошибка/неполная проверка, **3** — отмена. Приоритет: ошибка → отмена → обнаружение.
+## Ограничения
 
-## Рабочая база и ограничения
+Отсутствие совпадения не доказывает безопасность. HASH распознаёт точные байты известных файлов; источник не указывает семейство угрозы и происхождение каждого хеша. Архивы не распаковываются, ссылки и специальные файлы пропускаются. Служба, IPC, эвристика, наблюдение, анализ процессов и сети, карантин не реализованы.
 
-В `distribution/source` сохранены источник и MIT-лицензия. Ревизия `9e6be541abb33859f49c06d66cf7c97e54ab2bc4`: 11 636 строк, четыре дубля, **11 632 HASH, 0 PATTERN**. Офлайн-импорт и замена:
+Для Debug замените `Release` на `Debug`. Linux пока не проверен; команды для Ubuntu 22.04:
 
-```powershell
-./build/windows/Release/resheto-import.exe --format sha256-lines --input distribution/source/full-hash-sha256-aa.txt --provenance distribution/source/provenance.json --repository build/new-working --version malicious-hash-9e6be541abb33859
+```bash
+sudo apt install build-essential cmake ninja-build qt6-base-dev qt6-base-dev-tools libqt6sql6-sqlite qt6-qpa-plugins
+cmake --preset release
+cmake --build --preset release --parallel 4
+ctest --preset release
 ```
-
-При ошибке прежняя версия сохраняется, текущее задание использует свой снимок. Сетевое получение метаданных запускается отдельно: `./scripts/fetch-signatures.ps1 -Output build/new-source`. [Подробности источника и возврата](docs/signature_sources.md).
-
-Отсутствие совпадения не доказывает безопасность. Рабочая база распознаёт точные хеши, источник не предоставляет семейства и первоисточник каждого файла. Архивы, служба, IPC, эвристика, наблюдение, процессы, сеть и карантин не реализованы. Linux, настоящий NTFS ACL/заполненный диск и перенос без SDK отдельно не проверены.
-
-Подробности: [устройство](docs/implementation.md), [встраивание](docs/integration.md), [проверки](docs/verification.md), [замеры](docs/performance.md), [показ](docs/lab3_demo.md), [ручной EICAR](docs/eicar_manual.md). Измерения 100000 HASH + 1000 PATTERN относятся к синтетическому профилю, не к покрытию угроз.

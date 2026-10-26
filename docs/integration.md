@@ -42,7 +42,7 @@ auto page = history.query(job.id, query);
 `examples/consumer` — самостоятельный CMake-проект. Он не включает внутренние cpp, не запускает CLI, не требует Qt Test/Widgets и не создаёт базу при сканировании. Входные контрольные данные готовятся отдельно:
 
 ```powershell
-./build/final-20261025/Release/resheto-prepare.exe --source data/demo_signatures.json --output build/consumer-control
+./build/windows/Release/resheto-prepare.exe --source data/demo_signatures.json --output build/consumer-control
 cmake -S examples/consumer -B build/consumer -G "Visual Studio 17 2022" -A x64 -DRESHETO_SOURCE="$PWD" -DCMAKE_PREFIX_PATH="$env:QT_ROOT" -DCMAKE_DISABLE_FIND_PACKAGE_Qt6Widgets=TRUE -DCMAKE_DISABLE_FIND_PACKAGE_Qt6Test=TRUE
 cmake --build build/consumer --config Release --parallel 4
 ./build/consumer/Release/consumer.exe build/consumer-control/signatures.db build/consumer-control/fixtures/hash.bin build/consumer-control/fixtures/empty build/consumer/results.db

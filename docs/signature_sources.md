@@ -27,9 +27,10 @@ SOREL-20M был отклонён: отдельные Terms and Conditions of Us
 # Единственная сетевая операция, запускается явно; новый каталог:
 ./scripts/fetch-signatures.ps1 -Output build/source-new
 # Весь следующий шаг работает офлайн; можно использовать distribution/source:
-./build/final-20261025/Release/resheto-import.exe --format sha256-lines --input distribution/source/full-hash-sha256-aa.txt --provenance distribution/source/provenance.json --repository build/reproduced-working --version malicious-hash-9e6be541abb33859
+./build/windows/Release/resheto-import.exe --format sha256-lines --input distribution/source/full-hash-sha256-aa.txt --provenance distribution/source/provenance.json --repository build/reproduced-working --version malicious-hash-9e6be541abb33859
+# Контрольные файлы для примера: ./scripts/start.ps1 -Control -NoLaunch
 # Обычный выбор рабочей базы тем же CLI:
-./build/final-20261025/Release/resheto-cli.exe --path build/consumer-control/fixtures --db build/reproduced-working/current.json --storage build/reproduced-working/results.db --json
+./build/windows/Release/resheto-cli.exe --path build/manual/control/fixtures --db build/reproduced-working/current.json --storage build/reproduced-working/results.db --json
 ```
 
 `fetch-signatures.ps1 -Revision <40-hex>` позволяет явно получить другую ревизию; условия новой ревизии нужно проверить заново. Обычная сборка, CTest, сканер и GUI не скачивают данные, Qt Network не используется. Существующий снимок не перезаписывается. На Ubuntu точный список можно получить `curl --fail --location` с закреплённого URL из provenance, вместе с LICENSE/README; далее тот же `resheto-import` без `.exe`. Linux-прогон отложен.
@@ -46,7 +47,7 @@ SOREL-20M был отклонён: отдельные Terms and Conditions of Us
 
 ```powershell
 $previous=(Get-Content distribution/working/current.json -Raw | ConvertFrom-Json).previous
-./build/final-20261025/Release/resheto-import.exe --repository distribution/working --activate $previous
+./build/windows/Release/resheto-import.exe --repository distribution/working --activate $previous
 ```
 
 У первой поставки previous пустой — возвращаться ещё не к чему. `--activate versions/<uuid>/signatures.db` сначала повторно проверяет базу. Не правьте файлы опубликованной версии на месте. Активное задание уже держит снимок в памяти; следующее читает новый указатель. Контрольная сумма проверяет целостность, не удостоверяет доверенного издателя. Атомарность относится к публикации при обычном сбое операции; гарантии сохранности при аппаратном отказе носителя/питания не заявляются.

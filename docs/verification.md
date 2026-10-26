@@ -1,3 +1,16 @@
+# Чистка и проверка рабочей базы на обычном файле — 26.10.2026
+
+По согласованному списку удалены demo-run, demo-check, старые каталоги build кроме windows/manual, aqtinstall.log, PROMPT_LAB3_COMPLETION.md и docs/lab3_defense.md. Рекурсивные цели предварительно проверены на нахождение внутри рабочего каталога и отсутствие reparse points. GostLab2_FINAL.docx перенесён в docs/archive; git hash-object совпал с исходным объектом HEAD. .tools, исходники/тесты, контрольный источник data, рабочая поставка distribution и JSON-замеры docs/measurements сохранены. Старые пути отчётов ниже относятся к историческим запускам, теперь эти воспроизводимые каталоги удалены. Актуальные команды в README/integration/signature_sources/performance/lab3_demo переведены на build/windows.
+
+В scripts/start.ps1 добавлен -Path для подстановки любого существующего файла/каталога без смены рабочей базы. Команда `scripts/start.ps1 -Path .\README.md -NoLaunch` проверена в Windows PowerShell 5.1, поля указывают README, distribution/working/current.json и build/manual/results.db. Регрессия проверяет также Unicode-путь и явный отказ для отсутствующего объекта.
+
+Фактически выполнен штатный resheto-cli из build/windows/Release на обычном README проекта с --db distribution/working/current.json. Результат: **1 checked, 0 matches, 0 errors, completeness=full, exit 0**, версия malicious-hash-9e6be541abb33859. На момент запуска размер файла 9772 байта, SHA-256 FB9009ADA905B470399A59DF9BB5AF607FEC882934DBACA2371C8604AF68C293. JSONL — build/windows/working-file.jsonl, история — build/windows/working-file-check.db; --last дал точно тот же вывод. Это проверка реального файла текущим файловым модулем с нетестовой базой, без получения вредоносного образца. Отрицательный ответ не является доказательством безопасности.
+
+Дополнен CompletionTests::realFeedProvenance: три независимых ожидаемых SHA-256 теперь проверяются не только в новом офлайн-импорте, но и непосредственно в distribution/working/current.json; подтверждены working, 11632 HASH, 0 PATTERN. Это положительный поиск digest в реальной поставке, а не заявление о сканировании вредоносных байтов. SHA-256 поставляемой SQLite остался D2E4FFF6CA3684BB41925457174FD5FE6176AC9BD05DA62C8F43F9D7B4EEC967.
+
+Сначала прошли целевые scripts-powershell51 и completion, затем полный доступный CTest **6/6, 35,90 с** в Release. Команда: `./.tools/python/cmake/data/bin/ctest.exe --test-dir build/windows -C Release --output-on-failure`. Прежние проверки не ослаблялись. Debug и Linux в этой чистке заново не запускались. Никакие файлы пользовательских каталогов не сканировались; произвольным безопасным объектом выбран README в рабочем каталоге. Положительное обнаружение файла рабочей HASH-базой требует точных байтов файла с известным SHA-256; на произвольном обычном файле такое срабатывание не гарантируется.
+
+---
 # Исправление запуска — 26.10.2026
 
 Воспроизведена ошибка пользователя в штатном Windows PowerShell **5.1.26100.9711**: UTF-8 без BOM у demo.ps1 давал 4 ParserError, подготовка не выполнялась. Следующий запуск GUI получал несуществующий каталог истории и ошибку SQLite. В demo-results дополнительно использовалось неподдерживаемое в 5.1 имя кодировки utf8NoBOM. Прежняя проверка только в PowerShell 7 этого не обнаружила.

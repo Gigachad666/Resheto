@@ -41,6 +41,14 @@ try {
         $after=[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $manual 'control/signatures.db')))
         Assert-True ($before -ceq $after) 'Повторный запуск переписал контрольную базу'
         & (Join-Path $project 'scripts/start.ps1') -Bin $Bin -Directory $manual -NoLaunch | Out-Null
+        $arbitrary=Join-Path $root 'обычный документ.txt'
+        Save-ReshetoUtf8 $arbitrary 'Проверяем файл рабочей базой без контрольных правил.'
+        $shown=@(& (Join-Path $project 'scripts/start.ps1') -Bin $Bin -Directory $manual -Path $arbitrary -NoLaunch)
+        Assert-True ($shown -contains "Объект: $arbitrary") 'Запуск не подставил выбранный файл'
+        Assert-True ($shown -contains ('Сигнатуры: '+(Join-Path $project 'distribution/working/current.json'))) 'Для произвольного файла нужна рабочая база'
+        $failed=$false
+        try { & (Join-Path $project 'scripts/start.ps1') -Bin $Bin -Directory $manual -Path (Join-Path $root 'absent') -NoLaunch | Out-Null } catch { $failed=$true }
+        Assert-True $failed 'Отсутствующий объект должен давать ошибку'
     }
     Write-Output "PowerShell $($PSVersionTable.PSVersion): разбор, UTF-8/Unicode, 11/5, 2101/1, история и защита от перезаписи — успешно"
 } finally {
