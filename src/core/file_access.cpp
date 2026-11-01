@@ -98,6 +98,28 @@ QByteArray ReadFile::read(qsizetype count) {
 #endif
     data.resize(static_cast<qsizetype>(n)); return data;
 }
+QByteArray ReadFile::readAt(qint64 offset,qsizetype count) {
+    if(offset<0 || count<0 || count>65536 || offset>size() || count>size()-offset)
+        throw Error(QStringLiteral("Чтение структуры вне допустимых границ"));
+    QByteArray data(count,Qt::Uninitialized);
+#ifdef _WIN32
+    LARGE_INTEGER zero{},saved{},target{}; target.QuadPart=offset;
+    if(!SetFilePointerEx(impl_->handle,zero,&saved,FILE_CURRENT) || !SetFilePointerEx(impl_->handle,target,nullptr,FILE_BEGIN))
+        throw Error(QStringLiteral("Не удалось установить позицию чтения структуры"));
+    DWORD got=0; const bool readOk=::ReadFile(impl_->handle,data.data(),static_cast<DWORD>(count),&got,nullptr)!=0;
+    const bool restored=SetFilePointerEx(impl_->handle,saved,nullptr,FILE_BEGIN)!=0;
+    if(!readOk || !restored || got!=static_cast<DWORD>(count)) throw Error(QStringLiteral("Не удалось прочитать структуру файла полностью"));
+#else
+    qsizetype done=0;
+    while(done<count) {
+        const auto got=::pread(impl_->fd,data.data()+done,static_cast<size_t>(count-done),static_cast<off_t>(offset+done));
+        if(got<0 && errno==EINTR) continue;
+        if(got<=0) throw Error(QStringLiteral("Не удалось прочитать структуру файла полностью"));
+        done+=static_cast<qsizetype>(got);
+    }
+#endif
+    return data;
+}
 bool ReadFile::unchanged() const {
 #ifdef _WIN32
     BY_HANDLE_FILE_INFORMATION current{}, named{};

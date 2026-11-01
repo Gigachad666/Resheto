@@ -1,6 +1,7 @@
 #include "core/model.h"
 #include "core/database.h"
 #include "core/signatures.h"
+#include "fixtures.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -9,6 +10,8 @@
 #include <QProcess>
 #include <QScopeGuard>
 #include <QTemporaryDir>
+#include <QFileInfo>
+#include <QElapsedTimer>
 #include <QtTest>
 #ifdef Q_OS_WIN
 #define NOMINMAX
@@ -94,6 +97,39 @@ private slots:
         auto cancelled=args; cancelled<<"--cancel-after-ms"<<"0";
         QCOMPARE(execute(cli,cancelled),3); QCOMPARE(finalJob()["data"].toObject()["state"].toString(),"cancelled");
         QCOMPARE(execute(prepare,{"--source",source,"--output",root}),2); // Никакой перезаписи.
+    }
+    void heuristicCliAndPartialReplay() {
+        QTemporaryDir temp(QDir::currentPath()+"/cli-lab4-XXXXXX"); QVERIFY(temp.isValid()); const auto root=temp.path();
+        QFile f(root+"/positive.exe"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(fixtures::pe(true)); f.close();
+        const auto rules=QFileInfo(source).absolutePath()+"/heuristic_rules.json";
+        QStringList args{"--path",f.fileName(),"--heuristics",rules,"--storage",root+"/history.db","--json"};
+        QCOMPARE(execute(cli,args),1); QCOMPARE(finalJob()["data"].toObject()["matches"].toString(),"1"); QVERIFY(output.contains("heuristic_match"));
+        auto partial=args; partial<<"--db"<<root+"/missing.db"; QCOMPARE(execute(cli,partial),2); QVERIFY(output.contains("partial")); const auto original=output;
+        QCOMPARE(execute(cli,{"--last","--storage",root+"/history.db","--json"}),2); QCOMPARE(output,original);
+        auto cancelled=args; cancelled<<"--cancel-after-ms"<<"0"; QCOMPARE(execute(cli,cancelled),3);
+        QCOMPARE(execute(cli,{"--heuristics","--json"}),2);
+    }
+    void monitorCliUsesRealEvents() {
+        QTemporaryDir temp(QDir::currentPath()+"/cli-monitor-XXXXXX"); QVERIFY(temp.isValid()); const auto root=temp.path(); QVERIFY(QDir().mkpath(root+"/area"));
+#ifdef Q_OS_WIN
+        const auto monitor=QFileInfo(cli).absolutePath()+"/resheto-monitor.exe";
+#else
+        const auto monitor=QFileInfo(cli).absolutePath()+"/resheto-monitor";
+#endif
+        const auto rules=QFileInfo(source).absolutePath()+"/heuristic_rules.json";
+        QProcess p; p.start(monitor,{"--path",root+"/area","--heuristics",rules,"--storage",root+"/history.db","--no-processes","--duration-ms","1600","--json"}); QVERIFY(p.waitForStarted(3000));
+        QByteArray all; bool ready=false; QElapsedTimer timer; timer.start();
+        while(!ready && timer.elapsed()<5000 && p.state()!=QProcess::NotRunning) {
+            p.waitForReadyRead(200); all+=p.readAllStandardOutput(); for(const auto &line:all.split('\n')) { const auto o=QJsonDocument::fromJson(line).object(); if(o["type"]=="monitor_status" && o["ready"].toBool()) ready=true; }
+        }
+        QVERIFY2(ready,p.readAllStandardError().constData()); QFile f(root+"/area/positive.exe"); QVERIFY(f.open(QIODevice::WriteOnly)); f.write(fixtures::pe(true)); f.close();
+        QVERIFY(p.waitForFinished(5000)); QCOMPARE(p.exitCode(),3); all+=p.readAllStandardOutput(); QVERIFY(all.contains("heuristic_match"));
+        Store history(root+"/history.db",true); const auto j=history.latest(); QVERIFY(j); QCOMPARE(j->matches,1); QCOMPARE(j->exitCode(),3);
+        QCOMPARE(execute(monitor,{"--duration-ms","bad","--json"}),2); QCOMPARE(QJsonDocument::fromJson(output).object()["type"].toString(),"error");
+        const auto behavior=QFileInfo(source).absolutePath()+"/behavior_rules.json";
+        QCOMPARE(execute(monitor,{"--behavior",behavior,"--process-scope",root+"/area","--storage",root+"/process-only.db","--duration-ms","250","--json"}),3);
+        QVERIFY(output.contains(QStringLiteral("Файлы: выкл").toUtf8())); QCOMPARE(finalJob()["data"].toObject()["results"].toString(),"0");
+        QCOMPARE(execute(monitor,{"--no-files","--no-processes","--storage",root+"/invalid.db","--duration-ms","10","--json"}),2);
     }
 };
 int main(int argc,char **argv) {

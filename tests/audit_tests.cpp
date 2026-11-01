@@ -98,7 +98,8 @@ private slots:
     void storeRejectsInconsistentCountersAndRowIdentity() {
         QTemporaryDir tmp(QDir::currentPath()+"/resheto-history-XXXXXX"); QVERIFY(tmp.isValid()); const auto path=tmp.path()+"/results.db";
         auto j=validJob(); j.results=1; j.skipped=0;
-        { Store store(path); store.start(j); store.append(validResult(),j); store.finish(j); }
+        const auto originalResult=validResult();
+        { Store store(path); store.start(j); store.append(originalResult,j); store.finish(j); }
         { Store store(path,true); QCOMPARE(store.latest()->matches,1); QCOMPARE(store.page(j.id,0).size(),size_t(1)); }
         auto corrupt=j.json(); corrupt["matches"]="0"; corrupt["last_detection_path"]=""; corrupt["last_detection_name"]="";
         { Database d(path,false); d.exec("UPDATE jobs SET data=?",{QString::fromUtf8(QJsonDocument(corrupt).toJson())}); }
@@ -112,7 +113,8 @@ private slots:
         { Store store(path,true); QVERIFY(rejected([&]{store.page(j.id,0);})); QCOMPARE(store.lastRow(),0); QVERIFY(rejected([&]{store.latest();})); }
         { Database d(path,false); d.exec("UPDATE results SET data='[]'"); }
         { Store store(path,true); QVERIFY(rejected([&]{store.page(j.id,0);})); QVERIFY(rejected([&]{store.latest();})); }
-        { Database d(path,false); d.exec("UPDATE results SET data=?",{QString::fromUtf8(QJsonDocument(validResult().json()).toJson())}); }
+        // Восстанавливаем исходную строку, включая время, связанное с Detection.
+        { Database d(path,false); d.exec("UPDATE results SET data=?",{QString::fromUtf8(QJsonDocument(originalResult.json()).toJson())}); }
         { Store store(path,true); QCOMPARE(store.latest()->matches,1); QCOMPARE(store.page(j.id,0).size(),size_t(1)); }
     }
     void traversalDepthBoundary() {

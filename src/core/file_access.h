@@ -14,6 +14,8 @@ public:
     ReadFile(const ReadFile &) = delete;
     ReadFile &operator=(const ReadFile &) = delete;
     QByteArray read(qsizetype count);
+    // Ограниченное чтение заголовка на том же открытом объекте; последовательная позиция сохраняется.
+    QByteArray readAt(qint64 offset,qsizetype count);
     qint64 size() const;
     QString identity() const;
     bool unchanged() const;

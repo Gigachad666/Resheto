@@ -1,6 +1,11 @@
 #include "gui/mainwindow.h"
 #include "core/database.h"
 #include "core/signatures.h"
+#include "fixtures.h"
+#include <QCheckBox>
+#include <QPlainTextEdit>
+#include <QElapsedTimer>
+#include <QDateTime>
 #include <QDir>
 #include <QComboBox>
 #include <QClipboard>
@@ -16,6 +21,8 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QTabWidget>
+#include <QProcess>
 #include <QtTest>
 #include <future>
 using namespace resheto;
@@ -115,6 +122,37 @@ private slots:
             QVERIFY(!start->isEnabled());
         }
     }
+    void repeatedJobsAndAutomaticHistorySwitch() {
+        QTemporaryDir tmp(QDir::currentPath()+"/resheto-gui-history-XXXXXX"); QVERIFY(tmp.isValid()); const auto root=tmp.path();
+        auto put=[](const QString &path,const QByteArray &bytes){QFile f(path); if(!f.open(QIODevice::WriteOnly) || f.write(bytes)!=bytes.size()) throw Error("fixture write");};
+        put(root+"/source.json",R"({"version":"test-history","signatures":[{"id":"test","name":"ТЕСТ","kind":"PATTERN","value":"aa00bb","version":"1","enabled":1}]})");
+        createSignatures(root+"/source.json",root+"/signatures.db");
+        put(root+"/match",QByteArray::fromHex("aa00bb")); put(root+"/clean","ordinary harmless bytes");
+        Request req; req.path=root+"/match"; req.signaturePath=root+"/signatures.db"; req.storagePath=root+"/first.db";
+        MainWindow window(req); window.show(); auto *start=window.findChild<QPushButton *>("start"); auto *summary=window.findChild<QLabel *>("summary");
+        QTRY_VERIFY_WITH_TIMEOUT(start->isEnabled(),10000);
+        QTest::mouseClick(start,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(start->isEnabled(),10000);
+        QString firstId;
+        { Store store(req.storagePath,true); const auto job=store.latest(); QVERIFY(job); firstId=job->id; QCOMPARE(job->matches,1); }
+        window.path_->setText(root+"/clean"); QTest::mouseClick(start,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(start->isEnabled(),10000);
+        QString secondId;
+        { Store store(req.storagePath,true); const auto job=store.latest(); QVERIFY(job); secondId=job->id; QVERIFY(firstId!=secondId); QCOMPARE(job->matches,0);
+          const auto previous=store.query(firstId,{}); QCOMPARE(previous.total,1); QCOMPARE(previous.rows.front().outcome,"signature_match");
+          const auto current=store.query(secondId,{}); QCOMPARE(current.total,1); QCOMPARE(current.rows.front().path,root+"/clean"); }
+        Request other=req; other.storagePath=root+"/second.db"; const auto otherJob=runJob(other); QCOMPARE(otherJob.matches,1);
+        auto selectHistory=[&](const QString &path){window.storage_->setText(path); return QMetaObject::invokeMethod(window.storage_,"editingFinished");};
+        QVERIFY(selectHistory(other.storagePath));
+        QTRY_VERIFY_WITH_TIMEOUT(summary->text().contains(otherJob.id) && window.visibleRows_.size()==1,10000);
+        QCOMPARE(window.visibleRows_.front().path,req.path); QCOMPARE(window.visibleRows_.front().outcome,"signature_match");
+        // Отсутствующая история не создаётся чтением и не оставляет строки предыдущей базы.
+        const auto empty=root+"/absent.db"; QVERIFY(selectHistory(empty));
+        QTRY_COMPARE_WITH_TIMEOUT(summary->text(),QStringLiteral("Нет сохранённых заданий"),10000);
+        QVERIFY(window.visibleRows_.empty()); QVERIFY(!QFileInfo::exists(empty)); QVERIFY(!window.historyErrorLabel_->isVisible());
+        QVERIFY(selectHistory(req.storagePath));
+        QTRY_VERIFY_WITH_TIMEOUT(summary->text().contains(secondId) && window.visibleRows_.size()==1,10000);
+        QCOMPARE(window.visibleRows_.front().path,root+"/clean");
+        QVERIFY(window.grab().save(QDir::currentPath()+"/gui-history-preview.png"));
+    }
     void globalFilterSearchSortAndCopy() {
         QTemporaryDir tmp(QDir::currentPath()+"/resheto-gui-global-XXXXXX"); QVERIFY(tmp.isValid()); const auto root=tmp.path();
         const auto storage=root+"/history.db";
@@ -141,6 +179,101 @@ private slots:
         search->clear(); window.findChild<QComboBox *>("sort")->setCurrentIndex(1); window.findChild<QComboBox *>("direction")->setCurrentIndex(1);
         QTRY_COMPARE_WITH_TIMEOUT(table->rowCount(),200,10000); QCOMPARE(table->item(0,0)->text(),j.detectionPath);
         filter->setCurrentIndex(2); QTRY_COMPARE_WITH_TIMEOUT(table->rowCount(),0,10000);
+    }
+    void heuristicFallbackNotificationAndPartialFilter() {
+        QTemporaryDir temp(QDir::currentPath()+"/gui-lab4-XXXXXX"); QVERIFY(temp.isValid()); const auto root=temp.path();
+        QFile file(root+"/positive.exe"); QVERIFY(file.open(QIODevice::WriteOnly)); file.write(fixtures::pe(true)); file.close();
+        Request r; r.path=file.fileName(); r.signaturePath=root+"/missing.db"; r.heuristicPath=QStringLiteral(RESHETO_SOURCE_DIR)+"/data/heuristic_rules.json"; r.storagePath=root+"/history.db";
+        MainWindow window(r); window.show(); QTRY_VERIFY_WITH_TIMEOUT(window.start_->isEnabled(),10000);
+        QTest::mouseClick(window.start_,Qt::LeftButton);
+        QTRY_VERIFY_WITH_TIMEOUT(window.notification_->isVisible() && window.notification_->text().contains(r.path),5000);
+        const auto shownUtc=QDateTime::currentDateTimeUtc();
+        { Store store(r.storagePath,true); ResultQuery q; q.filter=ResultFilter::Matches; const auto rows=store.query(window.jobId_,q).rows; QCOMPARE(rows.size(),size_t(1));
+          const auto latency=QDateTime::fromString(rows.front().time,Qt::ISODateWithMs).msecsTo(shownUtc); qInfo()<<"manual notification latency_ms"<<latency; QVERIFY(latency>=0 && latency<=5000); }
+        QTRY_VERIFY_WITH_TIMEOUT(!window.running_,10000); QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),1,10000);
+        window.filter_->setCurrentIndex(2); QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),1,10000);
+        QVERIFY(window.table_->item(0,1)->text().contains(QStringLiteral("неполная")));
+        window.table_->setCurrentCell(0,0); window.showDetails(); QVERIFY(window.details_->toPlainText().contains(QStringLiteral("Полнота"))); QVERIFY(window.details_->toPlainText().contains("writable-executable"));
+        { Store store(r.storagePath,true); const auto j=store.latest(); QCOMPARE(j->matches,1); QCOMPARE(j->exitCode(),2); }
+        QVERIFY(window.grab().save(QDir::currentPath()+"/gui-lab4-preview.png"));
+    }
+    void monitorControlsAndPersistentHistoryError() {
+        QTemporaryDir temp(QDir::currentPath()+"/gui-monitor-XXXXXX"); QVERIFY(temp.isValid()); const auto root=temp.path(); QVERIFY(QDir().mkpath(root+"/area"));
+        QFile source(root+"/signatures.json"); QVERIFY(source.open(QIODevice::WriteOnly)); source.write(R"({"version":"gui-monitor","signatures":[{"id":"control","name":"CONTROL","kind":"PATTERN","value":"aabbcc","version":"1","enabled":1}]})"); source.close(); createSignatures(source.fileName(),root+"/signatures.db");
+        Request r; r.path=root+"/area"; r.signaturePath=root+"/signatures.db"; r.storagePath=root+"/history.db";
+        MainWindow window(r); window.show(); QTRY_VERIFY_WITH_TIMEOUT(window.watch_->isEnabled() && !window.view_.valid() && !window.probe_.valid(),10000);
+        QTest::mouseClick(window.watch_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(window.monitor_.status().ready,5000); QVERIFY(window.start_->isEnabled());
+        QFile file(r.path+"/sample"); QVERIFY(file.open(QIODevice::WriteOnly)); file.write(QByteArray::fromHex("aabbcc")); file.close();
+        QTRY_VERIFY_WITH_TIMEOUT(window.notification_->isVisible(),5000); const auto shownUtc=QDateTime::currentDateTimeUtc();
+        { Store store(r.storagePath,true); ResultQuery q; q.filter=ResultFilter::Matches; const auto rows=store.query(window.monitor_.status().job.id,q).rows; QCOMPARE(rows.size(),size_t(1));
+          const auto latency=QDateTime::fromString(rows.front().time,Qt::ISODateWithMs).msecsTo(shownUtc); qInfo()<<"monitor notification latency_ms"<<latency; QVERIFY(latency>=0 && latency<=5000); }
+        QTest::mouseClick(window.watchStop_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(!window.monitorActive_,5000); QTRY_VERIFY_WITH_TIMEOUT(window.watch_->isEnabled(),5000);
+        QTest::mouseClick(window.watch_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(window.monitor_.status().ready,5000);
+        QFile bad(root+"/broken.db"); QVERIFY(bad.open(QIODevice::WriteOnly)); bad.write("not SQLite"); bad.close();
+        window.storage_->setText(bad.fileName()); window.readPage(); window.view_.wait(); window.tick();
+        QTRY_VERIFY_WITH_TIMEOUT(!window.monitorActive_,5000); QVERIFY(window.historyErrorLabel_->isVisible()); QVERIFY(window.historyErrorLabel_->text().contains("SQLite"));
+        window.tick(); QVERIFY(window.historyErrorLabel_->isVisible()); QVERIFY(window.summary_->text().contains(QStringLiteral("из-за ошибки чтения")));
+    }
+    void parallelJobsKeepSelectionAndIndependentCancel() {
+        QTemporaryDir temp(QDir::currentPath()+"/gui-parallel-XXXXXX"); QVERIFY(temp.isValid()); const auto root=temp.path(); QVERIFY(QDir().mkpath(root+"/watched"));
+        auto put=[](const QString &p,const QByteArray &b){QFile f(p); if(!f.open(QIODevice::WriteOnly) || f.write(b)!=b.size()) throw Error("fixture write");};
+        put(root+"/source.json",R"({"version":"parallel","signatures":[{"id":"control","name":"CONTROL","kind":"PATTERN","value":"aabbcc","version":"1","enabled":1}]})"); createSignatures(root+"/source.json",root+"/signatures.db"); put(root+"/manual.bin",QByteArray::fromHex("aabbcc"));
+        Request r; r.path=root+"/manual.bin"; r.signaturePath=root+"/signatures.db"; r.storagePath=root+"/new/history.db";
+        std::mutex mutex; std::condition_variable wake; bool entered=false,release=false;
+        r.hooks.beforeOpen=[&](const QString &){std::unique_lock lock(mutex);entered=true;wake.notify_all();wake.wait(lock,[&]{return release;});return QString();};
+        MainWindow window(r,{}, {},root+"/watched"); window.show(); auto cleanup=qScopeGuard([&]{{std::lock_guard lock(mutex);release=true;}wake.notify_all();window.controller_.cancel();window.monitor_.cancel();});
+        QTRY_VERIFY_WITH_TIMEOUT(window.watch_->isEnabled() && window.start_->isEnabled(),10000); QTest::mouseClick(window.watch_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(window.monitor_.status().ready,5000); const auto monitorId=window.monitorJobId_;
+        QTest::mouseClick(window.start_,Qt::LeftButton); {std::unique_lock lock(mutex);QVERIFY(wake.wait_for(lock,std::chrono::seconds(5),[&]{return entered;}));}
+        const auto manualId=window.manualJobId_; QVERIFY(manualId!=monitorId); QVERIFY(window.running_ && window.monitorActive_); QVERIFY(!window.storage_->isEnabled());
+        QCOMPARE(window.jobs_->currentData().toString(),manualId);
+        put(root+"/watched/first",QByteArray::fromHex("aabbcc")); QTRY_VERIFY_WITH_TIMEOUT(window.monitor_.status().job.matches==1,5000); QCOMPARE(window.jobId_,manualId);
+        QTest::mouseClick(window.stop_,Qt::LeftButton); {std::lock_guard lock(mutex);release=true;}wake.notify_all(); QTRY_VERIFY_WITH_TIMEOUT(!window.running_,5000); QVERIFY(window.monitorActive_);
+        {Store history(r.storagePath,true); QCOMPARE(history.getJob(manualId)->state,"cancelled"); QCOMPARE(history.getJob(monitorId,false)->state,"running");}
+        QTRY_VERIFY_WITH_TIMEOUT(window.currentMonitor_->isEnabled() && window.currentManual_->isEnabled(),5000);
+        QTest::mouseClick(window.currentMonitor_,Qt::LeftButton); QCOMPARE(window.jobId_,monitorId); QCOMPARE(window.jobs_->currentData().toString(),window.jobId_);
+        QTRY_VERIFY_WITH_TIMEOUT(window.summary_->text().contains(monitorId) && !window.view_.valid() && !window.visibleRows_.empty(),5000); QCOMPARE(window.visibleRows_.front().jobId,monitorId); QVERIFY(window.monitorActive_);
+        QTest::mouseClick(window.currentManual_,Qt::LeftButton); QCOMPARE(window.jobId_,manualId); QCOMPARE(window.jobs_->currentData().toString(),window.jobId_);
+        QTRY_VERIFY_WITH_TIMEOUT(window.summary_->text().contains(manualId) && !window.view_.valid(),5000); QVERIFY(window.monitorActive_);
+        QTRY_VERIFY_WITH_TIMEOUT(window.jobs_->findData(manualId)>=0,5000); window.jobs_->setCurrentIndex(window.jobs_->findData(manualId));
+        put(root+"/watched/second",QByteArray::fromHex("aabbcc")); QTRY_VERIFY_WITH_TIMEOUT(window.monitor_.status().job.matches==2,5000); QTest::qWait(350); QCOMPARE(window.jobId_,manualId); QVERIFY(window.summary_->text().contains(manualId));
+        QCOMPARE(window.jobs_->currentData().toString(),manualId);
+        {std::lock_guard lock(mutex);entered=false;release=false;} QTest::mouseClick(window.start_,Qt::LeftButton); {std::unique_lock lock(mutex);QVERIFY(wake.wait_for(lock,std::chrono::seconds(5),[&]{return entered;}));}
+        QTest::mouseClick(window.watchStop_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(!window.monitorActive_,5000); QVERIFY(window.running_); {std::lock_guard lock(mutex);release=true;}wake.notify_all();
+        QTRY_VERIFY_WITH_TIMEOUT(!window.running_,5000); {Store history(r.storagePath,true); const auto job=history.getJob(window.manualJobId_); QCOMPARE(job->state,"completed"); QCOMPARE(job->matches,1); QCOMPARE(history.getJob(monitorId)->state,"cancelled");}
+        QVERIFY(window.grab().save(QDir::currentPath()+"/gui-parallel-preview.png"));
+    }
+    void processImageResultsAreScopedAndSearchable() {
+        QTemporaryDir temp(QDir::currentPath()+"/gui-process-XXXXXX"); QVERIFY(temp.isValid()); const auto root=temp.path(); QVERIFY(QDir().mkpath(root+"/programs"));
+#ifdef _WIN32
+        const auto helper=root+"/programs/helper.exe";
+#else
+        const auto helper=root+"/programs/helper";
+#endif
+        QVERIFY(QFile::copy(QStringLiteral(RESHETO_HELPER_PATH),helper));
+        Request r; r.heuristicPath=QStringLiteral(RESHETO_SOURCE_DIR)+"/data/heuristic_rules.json"; r.storagePath=root+"/history.db";
+        MainWindow window(r,QStringLiteral(RESHETO_SOURCE_DIR)+"/data/behavior_rules.json",root+"/programs"); window.show(); window.fileEnabled_->setChecked(false); window.processImages_->setChecked(true);
+        QTRY_VERIFY_WITH_TIMEOUT(window.watch_->isEnabled(),10000); QTest::mouseClick(window.watch_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(window.monitor_.status().ready,5000); QProcess p; p.start(helper,{"--children","3","--hold-ms","3000","--delay-ms","600"}); QVERIFY(p.waitForStarted(2000));
+        auto cleanup=qScopeGuard([&]{if(p.state()!=QProcess::NotRunning){p.kill();p.waitForFinished(2000);}window.monitor_.cancel();}); const auto pid=QString::number(p.processId());
+        QTRY_VERIFY_WITH_TIMEOUT(window.monitor_.status().job.matches>=1 && window.monitor_.status().processImages>=4,7000);
+        window.processSearch_->setText(pid); QTRY_COMPARE_WITH_TIMEOUT(window.processTable_->rowCount(),1,3000); QCOMPARE(window.processTable_->item(0,0)->text(),pid); QVERIFY(window.processTable_->item(0,3)->text().startsWith(root+"/programs"));
+        window.tabs_->setCurrentIndex(2); window.search_->setText(pid); window.filter_->setCurrentIndex(1); QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),1,5000); window.table_->setCurrentCell(0,0); window.showDetails();
+        QVERIFY(window.table_->item(0,0)->text().startsWith("PID "+pid+" — "));
+        QVERIFY(window.details_->toPlainText().contains("PID "+pid)); QVERIFY(window.details_->toPlainText().contains("child-process-burst")); QVERIFY(window.details_->toPlainText().contains(QStringLiteral("Основание:")));
+        window.filter_->setCurrentIndex(0); QTRY_VERIFY_WITH_TIMEOUT(window.table_->rowCount()>=2,5000); bool image=false; for(const auto &event:window.visibleEvents_) image|=event["type"]=="process_image"; QVERIFY(image);
+        for(int i=0;i<static_cast<int>(window.visibleEvents_.size());++i) if(window.visibleEvents_[i]["type"]=="process_image" && window.visibleEvents_[i]["details"].toObject()["process"].toObject()["pid"].toString()==pid) {
+            QVERIFY(window.table_->item(i,0)->text().startsWith("PID "+pid+" — ")); window.table_->setCurrentCell(i,0); QTest::mouseClick(window.findChild<QPushButton *>("copyPath"),Qt::LeftButton); QCOMPARE(QApplication::clipboard()->text(),helper); break;
+        }
+        QVERIFY(!window.monitorState_->text().contains(QStringLiteral("полный охват"))); QVERIFY(window.grab().save(QDir::currentPath()+"/gui-process-preview.png"));
+        QVERIFY(p.waitForFinished(6000)); QCOMPARE(p.exitCode(),0);
+        QTest::mouseClick(window.watchStop_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(!window.monitorActive_,5000);
+        QCOMPARE(window.processTable_->rowCount(),0); QVERIFY(window.processState_->text().contains(QStringLiteral("остановлено")));
+    }
+    void olderHistoryPagesHaveReturnToNew() {
+        QTemporaryDir temp(QDir::currentPath()+"/gui-jobs-XXXXXX"); QVERIFY(temp.isValid()); Request r; r.storagePath=temp.path()+"/history.db";
+        {Store store(r.storagePath); for(int i=0;i<52;++i) {Job j;j.id=QString("job-%1").arg(i);j.path="controlled";j.databaseVersion="control";j.started=now();j.finished=now();j.state="completed";store.start(j);store.finish(j);}}
+        MainWindow window(r); window.show(); QTRY_VERIFY_WITH_TIMEOUT(window.jobs_->findData("job-51")>=0,5000); const auto selected=window.jobId_;
+        QTest::mouseClick(window.earlier_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(window.jobs_->findData("job-0")>=0,5000); window.jobs_->setCurrentIndex(window.jobs_->findData("job-0")); QTRY_VERIFY_WITH_TIMEOUT(window.summary_->text().contains("job-0"),5000);
+        QTest::mouseClick(window.newer_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(window.jobs_->findData(selected)>=0,5000); QCOMPARE(window.jobId_,QString("job-0")); QVERIFY(window.summary_->text().contains("job-0"));
     }
 };
 QTEST_MAIN(GuiTests)

@@ -20,6 +20,7 @@ int main(int argc,char **argv) {
     QCommandLineParser p; p.setApplicationDescription(QStringLiteral("АС Решето — сигнатурное сканирование; JSON Lines: result*, job")); p.addHelpOption();
     p.addOption({"path",QStringLiteral("Файл или каталог"),"path"});
     p.addOption({"db",QStringLiteral("База сигнатур"),"file"});
+    p.addOption({"heuristics",QStringLiteral("JSON-набор статической эвристики (явное включение)"),"file"});
     p.addOption({"storage",QStringLiteral("Хранилище результатов"),"file"});
     p.addOption({"non-recursive",QStringLiteral("Не входить в подкаталоги")});
     p.addOption({"json",QStringLiteral("Машинный вывод JSON Lines")});
@@ -45,8 +46,9 @@ int main(int argc,char **argv) {
             Store store(storage,true); auto j=store.latest();
             if(!j) throw Error(QStringLiteral("Нет сохранённых заданий")); job=*j;
         } else {
-            if(!p.isSet("path") || !p.isSet("db")) throw Error(QStringLiteral("Требуются --path и --db"));
+            if(!p.isSet("path") || (!p.isSet("db") && !p.isSet("heuristics"))) throw Error(QStringLiteral("Требуются --path и --db либо --heuristics"));
             Request request; request.path=p.value("path"); request.signaturePath=p.value("db"); request.storagePath=storage; request.recursive=!p.isSet("non-recursive");
+            request.heuristicPath=p.value("heuristics");
             bool ok=false; request.blockSize=p.value("block-size").toLongLong(&ok);
             if(!ok) throw Error(QStringLiteral("Некорректный размер блока"));
             qint64 timeout=-1;
@@ -68,7 +70,7 @@ int main(int argc,char **argv) {
                     auto rows=store.page(job.id,cursor); if(rows.empty()) break; cursor=store.lastRow();
                     for(const auto &r:rows) {
                         if(p.isSet("json")) jsonLine({{"type","result"},{"data",r.json()}});
-                        else QTextStream(stdout)<<r.path<<": "<<outcomeText(r)<<" "<<r.signatureName<<" "<<r.reason<<Qt::endl;
+                        else QTextStream(stdout)<<r.path<<": "<<outcomeText(r)<<" "<<detectionName(r)<<" "<<r.reason<<Qt::endl;
                     }
                 }
             } catch(const Error &e) { job.state="failed"; job.error=e.message; }

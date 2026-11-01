@@ -1,10 +1,41 @@
-/build*/
-/.tools/
-/demo-run/
+# В корне игнорируется всё, кроме перечисленного ниже.
+/*
+!/.gitignore
+!/README.md
+!/ReadMeToo.md
+!/ReadMeToo_Lab4.md
+!/CMakeLists.txt
+!/CMakePresets.json
+
+# Исходники, тесты, примеры подключения и скрипты.
+!/src/
+!/tests/
+!/examples/
+!/scripts/
+
+# Правила и готовая рабочая база с лицензией и происхождением.
+!/data/
+!/distribution/
+
+# Документация по программе и сохранённые измерения; планы остаются локально.
+!/docs/
+/docs/*
+!/docs/*.md
+!/docs/measurements/
+/docs/*_plan.md
+
+# Генерируемые файлы при сборке внутри разрешённых каталогов.
+CMakeFiles/
+CMakeCache.txt
+CTestTestfile.cmake
+cmake_install.cmake
+*_autogen/
+Testing/
+
+# Локальные настройки и временные базы в разрешённых каталогах.
 *.user
 *.db
 *.db-*
 *.db.sha256
-/aqtinstall.log
 !/distribution/working/versions/**/*.db
 !/distribution/working/versions/**/*.db.sha256

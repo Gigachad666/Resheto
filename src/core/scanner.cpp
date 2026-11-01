@@ -3,9 +3,11 @@
 #include "file_access.h"
 #include "signatures.h"
 #include "search.h"
+#include "heuristic.h"
 #include <QCryptographicHash>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QUuid>
 #include <algorithm>
 #include <limits>
@@ -33,12 +35,19 @@ qint64 findPattern(const QByteArray &w,qint64 base,qint64 firstEnd,const Signatu
 }
 Result scanFile(const QString &path,const Request &request) {
     Result r; r.path=path; r.jobId=request.id; r.time=now();
-    if(!request.cancel || !request.snapshot || !request.snapshot->index || request.snapshot->entries.empty() || request.blockSize<4096 || request.blockSize>4*1024*1024) {
-        r.code="analyzer_not_ready"; r.reason=QStringLiteral("Нет снимка базы либо некорректный размер блока"); return r;
+    const bool heuristicRequested=!request.heuristicPath.isEmpty() || bool(request.heuristicRules);
+    const bool signatureReady=request.snapshot && request.snapshot->index && !request.snapshot->entries.empty();
+    if(heuristicRequested || request.source!="manual") r.formatVersion=2;
+    if(request.snapshot) r.databaseVersion=request.snapshot->version;
+    if(request.heuristicRules) r.rulesVersion=request.heuristicRules->version;
+    if(!request.cancel || (!signatureReady && !request.heuristicRules) || request.blockSize<4096 || request.blockSize>4*1024*1024) {
+        r.code="analyzer_not_ready"; r.reason=QStringLiteral("Нет доступного анализатора либо некорректный размер блока"); return r;
     }
-    r.databaseVersion=request.snapshot->version;
     auto cancelled=[&] { return request.cancel->load(std::memory_order_relaxed); };
-    auto fail=[&](const QString &code,const QString &reason) { r.code=code; r.reason=reason; r.time=now(); return r; };
+    auto fail=[&](const QString &code,const QString &reason) {
+        r.outcome="not_checked"; r.completeness="none"; r.code=code; r.reason=reason; r.time=now();
+        r.signatureId.clear(); r.signatureName.clear(); r.signatureVersion.clear(); r.ruleId.clear(); r.ruleName.clear(); r.ruleVersion.clear(); r.basis.clear(); r.offset=-1; r.details={}; return r;
+    };
     try {
         if(cancelled()) return fail("cancelled",QStringLiteral("Проверка отменена"));
         if(request.hooks.beforeOpen) { auto e=request.hooks.beforeOpen(path); if(!e.isEmpty()) throw Error(e); }
@@ -50,26 +59,54 @@ Result scanFile(const QString &path,const Request &request) {
             QByteArray block=file.read(request.blockSize);
             if(block.isEmpty()) break;
             if(consumed>r.size-block.size()) return fail("changed",QStringLiteral("Размер файла изменился во время чтения"));
-            hash.addData(block);
+            if(signatureReady) hash.addData(block);
             const qint64 base=consumed-tail.size();
             QByteArray window=tail+block;
             if(request.hooks.afterBlock) request.hooks.afterBlock(path,consumed+block.size());
-            if(request.snapshot->maxPattern && !request.snapshot->index->patterns(*request.snapshot,window,base,consumed,r.size,cancelled,found,foundOffset))
+            if(signatureReady && request.snapshot->maxPattern && !request.snapshot->index->patterns(*request.snapshot,window,base,consumed,r.size,cancelled,found,foundOffset))
                 return fail("cancelled",QStringLiteral("Поиск отменён"));
             consumed+=block.size();
-            tail=window.right(qMax<qsizetype>(0,request.snapshot->maxPattern-1));
+            if(signatureReady) tail=window.right(qMax<qsizetype>(0,request.snapshot->maxPattern-1));
         }
         if(cancelled()) return fail("cancelled",QStringLiteral("Проверка отменена"));
         if(consumed!=r.size || !file.unchanged()) return fail("changed",QStringLiteral("Файл изменён, исчез или путь подменён во время проверки"));
-        const auto digest=hash.result();
-        if(!found) {
+        const auto digest=signatureReady?hash.result():QByteArray();
+        if(!found && signatureReady) {
             found=request.snapshot->index->digest(*request.snapshot,digest,r.size);
         }
-        r.completeness="full"; r.analyzers="SHA-256,PATTERN"; r.outcome=found ? "signature_match" : "no_match";
+        r.completeness="full"; r.analyzers=signatureReady?QString("SHA-256,PATTERN"):QString(); r.outcome=found ? "signature_match" : "no_match";
         if(found) {
             r.signatureId=found->id; r.signatureName=found->name; r.signatureVersion=found->version;
             r.offset=foundOffset;
             r.basis=found->kind=="HASH" ? QStringLiteral("SHA-256: ")+QString::fromLatin1(digest.toHex()) : QStringLiteral("PATTERN, абсолютное смещение %1").arg(foundOffset);
+        }
+        if(!found && request.heuristicRules) {
+            const auto features=executableFeatures(file,path,cancelled);
+            if(cancelled()) return fail("cancelled",QStringLiteral("Извлечение признаков отменено"));
+            const auto decision=evaluateHeuristics(features,*request.heuristicRules,cancelled);
+            if(cancelled()) return fail("cancelled",QStringLiteral("Эвристика отменена"));
+            if(!file.unchanged()) return fail("changed",QStringLiteral("Файл изменён во время извлечения признаков"));
+            r.source="heuristic"; r.details=decision.json();
+            if(decision.state=="not_applicable") {
+                if(!signatureReady) return fail(decision.code,decision.reason);
+            } else {
+                if(!r.analyzers.isEmpty()) r.analyzers+=",";
+                r.analyzers+="HEURISTIC";
+                if(decision.state=="partial" || decision.state=="error") {
+                    if(!signatureReady && decision.matched.isEmpty()) return fail(decision.code,decision.reason);
+                    r.completeness="partial"; r.code=decision.code; r.reason=decision.reason;
+                }
+                if(decision.suspicious) {
+                    r.outcome="heuristic_match"; const auto first=decision.matched.first().toObject();
+                    r.ruleId=first["id"].toString(); r.ruleName=QStringLiteral("Эвристические признаки %1").arg(decision.format); r.ruleVersion=first["version"].toString();
+                    QStringList descriptions; for(const auto &rule:decision.matched) descriptions.push_back(rule.toObject()["description"].toString());
+                    r.basis=QStringLiteral("%1; сумма %2, порог %3; набор %4").arg(descriptions.join("; ")).arg(decision.score).arg(decision.threshold).arg(decision.version);
+                }
+            }
+        }
+        if(!found && (!request.signatureError.isEmpty() || !request.heuristicError.isEmpty())) {
+            r.completeness="partial"; r.code="analyzer_unavailable";
+            r.reason=QStringList{request.signatureError,request.heuristicError}.filter(QRegularExpression(".+")).join("; ");
         }
         r.time=now(); return r;
     } catch(const Error &e) { return fail("file_io",e.message); }
@@ -77,6 +114,8 @@ Result scanFile(const QString &path,const Request &request) {
 Job runJob(Request req,Progress progress) {
     Job job; job.id=req.id.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : req.id;
     req.id=job.id; job.path=absolute(req.path); job.started=now();
+    const bool newRoute=!req.heuristicPath.isEmpty() || bool(req.heuristicRules) || req.source!="manual";
+    if(newRoute) { job.formatVersion=2; job.source=req.source; }
     std::unique_ptr<Store> store; bool started=false;
     QElapsedTimer throttle; throttle.start();
     auto report=[&](bool force=false) { if(progress && (force || throttle.elapsed()>=100)) { progress(job); throttle.restart(); } };
@@ -87,23 +126,40 @@ Job runJob(Request req,Progress progress) {
         std::error_code sameError;
         if(absolute(req.storagePath)==absolute(req.signaturePath) || (std::filesystem::equivalent(nativePath(req.storagePath),nativePath(req.signaturePath),sameError) && !sameError))
             throw Error(QStringLiteral("Хранилище и база сигнатур должны быть разными файлами"));
+        if(!req.heuristicPath.isEmpty() && absolute(req.storagePath)==absolute(req.heuristicPath)) throw Error(QStringLiteral("Хранилище и эвристические правила должны быть разными файлами"));
         store=std::make_unique<Store>(req.storagePath);
         store->start(job); started=true;
-        req.snapshot=loadSignatures(req.signaturePath);
-        job.databaseVersion=req.snapshot->version; report(true);
+        if(!req.heuristicPath.isEmpty()) {
+            try { req.heuristicRules=loadHeuristicRules(req.heuristicPath); }
+            catch(const Error &e) { req.heuristicRules.reset(); req.heuristicError=e.message; }
+        }
+        if(!req.signaturePath.isEmpty()) {
+            try { req.snapshot=loadSignatures(req.signaturePath); }
+            catch(const Error &e) { if(!newRoute) throw; req.snapshot.reset(); req.signatureError=e.message; }
+        } else if(!newRoute) throw Error(QStringLiteral("Не указана база сигнатур"));
+        if(!req.snapshot && !req.heuristicRules) throw Error(QStringLiteral("Нет доступного анализатора: ")+req.signatureError+"; "+req.heuristicError);
+        if(req.snapshot) job.databaseVersion=req.snapshot->version;
+        if(req.heuristicRules) job.rulesVersion=req.heuristicRules->version;
+        report(true);
         auto emitResult=[&](Result r) {
-            r.jobId=job.id; r.databaseVersion=job.databaseVersion; if(r.time.isEmpty()) r.time=now();
+            r.jobId=job.id; r.databaseVersion=job.databaseVersion;
+            if(newRoute) { r.formatVersion=2; r.rulesVersion=job.rulesVersion; }
+            if(r.time.isEmpty()) r.time=now();
             Job next=job; ++next.results;
             if(r.skipped) ++next.skipped;
             else if(r.outcome=="not_checked") { if(r.code!="cancelled") ++next.errors; }
-            else { ++next.checked; if(r.outcome=="signature_match") { ++next.matches; next.detectionPath=r.path; next.detectionName=r.signatureName; } }
+            else { ++next.checked; if(r.completeness=="partial") ++next.errors; if(isDetection(r)) { ++next.matches; next.detectionPath=r.path; next.detectionName=detectionName(r); } }
             store->append(r,next); job=next; report();
         };
         auto note=[&](const QString &p,const QString &code,const QString &reason,bool skipped=false) {
             Result r; r.path=p; r.code=code; r.reason=reason; r.skipped=skipped; emitResult(r);
         };
         QStringList excluded;
-        for(const auto &p:{absolute(req.storagePath),absolute(req.signaturePath),req.snapshot->path}) {
+        QStringList servicePaths{absolute(req.storagePath)};
+        if(!req.signaturePath.isEmpty()) servicePaths.push_back(absolute(req.signaturePath));
+        if(req.snapshot) servicePaths.push_back(req.snapshot->path);
+        if(!req.heuristicPath.isEmpty()) servicePaths.push_back(absolute(req.heuristicPath));
+        for(const auto &p:servicePaths) {
             for(const auto &suffix:{QString(),QString("-wal"),QString("-shm"),QString("-journal"),QString(".sha256")}) excluded.push_back(p+suffix);
         }
         auto isExcluded=[&](const QString &p) {

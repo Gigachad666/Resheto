@@ -1,0 +1,7 @@
+{
+  "format": "resheto-behavior-v1",
+  "version": "2026.10.31-1",
+  "rules": [
+    {"id":"child-process-burst","version":"1","description":"Наблюдаемый процесс запустил не менее трёх дочерних процессов за 5 секунд","window_ms":5000,"minimum_children":3,"enabled":true}
+  ]
+}

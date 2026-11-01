@@ -1,0 +1,9 @@
+{
+  "format": "resheto-heuristic-v1",
+  "version": "2026.11.01-1",
+  "threshold": 60,
+  "rules": [
+    {"id":"writable-executable","version":"1","applies_to":["PE","ELF"],"condition":{"feature":"writable_executable","equals":true},"severity":"high","weight":60,"critical":false,"description":"Область одновременно разрешает запись и исполнение","enabled":true},
+    {"id":"entry-outside-executable","version":"1","applies_to":["PE","ELF"],"condition":{"feature":"entry_outside_executable","equals":true},"severity":"high","weight":60,"critical":false,"description":"Ненулевая точка входа находится вне исполняемой области","enabled":true}
+  ]
+}

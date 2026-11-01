@@ -5,3 +5,5 @@
 #include "database.h"
 #include "signatures.h"
 #include "import.h"
+#include "heuristic.h"
+#include "monitor.h"
