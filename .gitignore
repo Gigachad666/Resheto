@@ -2,8 +2,6 @@
 /*
 !/.gitignore
 !/README.md
-!/ReadMeToo.md
-!/ReadMeToo_Lab4.md
 !/CMakeLists.txt
 !/CMakePresets.json
 
@@ -11,29 +9,53 @@
 !/src/
 !/tests/
 !/examples/
+/examples/network_probe/
 !/scripts/
 
 # Правила и готовая рабочая база с лицензией и происхождением.
 !/data/
 !/distribution/
 
-# Документация по программе и сохранённые измерения; планы остаются локально.
+# Публичные инструкции. Отчёты, планы и материалы разработки остаются локально.
 !/docs/
 /docs/*
-!/docs/*.md
-!/docs/measurements/
-/docs/*_plan.md
+!/docs/integration.md
+!/docs/signature_sources.md
 
 # Генерируемые файлы при сборке внутри разрешённых каталогов.
+build/
+build-*/
+cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
+CMakeUserPresets.json
 CTestTestfile.cmake
+DartConfiguration.tcl
 cmake_install.cmake
 *_autogen/
 Testing/
+_deps/
+build.ninja
+.ninja_*
+compile_commands.json
+.vs/
+*.sln
+*.vcxproj*
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.dll
+*.so
+*.so.*
+*.dylib
+*.pdb
 
-# Локальные настройки и временные базы в разрешённых каталогах.
+# Локальные настройки, записи трафика и временные базы.
 *.user
+*.pcap
+*.pcapng
 *.db
 *.db-*
 *.db.sha256

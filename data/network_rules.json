@@ -1,0 +1,10 @@
+{
+  "format": "resheto-network-v1",
+  "version": "2026.11.05-1",
+  "limits": {"max_flows":4096,"idle_timeout_ms":30000,"max_rule_keys":256,"max_events_per_key":256,"max_suppression_keys":4096},
+  "rules": [
+    {"id":"tcp-port-sweep","kind":"tcp_ports","version":"1","description":"TCP-попытки обращения ко многим различным портам одного узла","severity":"high","threshold":20,"window_ms":10000,"suppress_ms":30000,"enabled":true},
+    {"id":"periodic-tcp-attempts","kind":"tcp_periodic","version":"1","description":"Регулярные TCP-попытки соединения с одним узлом и портом","severity":"medium","threshold":6,"window_ms":60000,"suppress_ms":60000,"min_interval_ms":1000,"max_interval_ms":10000,"jitter_percent":10,"enabled":true},
+    {"id":"dns-nxdomain-burst","kind":"dns_nxdomain","version":"1","description":"Много различных DNS-имён с ответом NXDOMAIN у одного клиента","severity":"medium","threshold":20,"window_ms":30000,"suppress_ms":30000,"enabled":true}
+  ]
+}

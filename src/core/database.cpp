@@ -255,7 +255,16 @@ ResultPage Store::query(const QString &id,const ResultQuery &request) {
         case ResultSort::Insertion: key="row_id"; break;
         case ResultSort::Path: key="json_extract(data,'$.path') COLLATE BINARY"; break;
         case ResultSort::Outcome: key="json_extract(data,'$.outcome') COLLATE BINARY"; break;
-        case ResultSort::Signature: key="coalesce(nullif(json_extract(data,'$.signature_name'),''),json_extract(data,'$.rule_name'),'') COLLATE BINARY"; break;
+        case ResultSort::Signature:
+            // Старые эвристические результаты хранят общее название в rule_name.
+            // Сортируем по тому же конкретному правилу, которое видно в таблице.
+            key="coalesce(nullif(json_extract(data,'$.signature_name'),''),"
+                "CASE WHEN json_extract(data,'$.outcome')='heuristic_match' THEN "
+                "(SELECT nullif(json_extract(m.value,'$.description'),'') FROM json_each(results.data,'$.details.matched') m "
+                "WHERE json_extract(m.value,'$.id')=json_extract(results.data,'$.rule_id') "
+                "AND json_extract(m.value,'$.version')=json_extract(results.data,'$.rule_version') LIMIT 1) END,"
+                "json_extract(data,'$.rule_name'),'') COLLATE BINARY";
+            break;
         default: throw Error(QStringLiteral("Неизвестная сортировка"));
         }
         { auto q=db_.exec("SELECT count(*) FROM results WHERE "+where,args); q.next(); page.total=q.value(0).toLongLong(); }

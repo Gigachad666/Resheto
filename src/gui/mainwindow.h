@@ -13,8 +13,12 @@ class QProgressBar;
 class QComboBox;
 class QPlainTextEdit;
 class QTabWidget;
+class QToolButton;
 class GuiTests;
 namespace resheto {
+#ifdef RESHETO_WITH_NETWORK
+class NetworkPanel;
+#endif
 struct ViewPage {
     QString jobId,error;
     std::optional<Job> job;
@@ -24,7 +28,7 @@ struct ViewPage {
     qint64 total=0, upperRow=0;
     quint64 generation=0;
     std::vector<Job> jobs;
-    bool listOnly=false,listed=false;
+    bool listOnly=false,listed=false,hasEarlierJobs=false;
 };
 struct ResultView {
     QTableWidget *table=nullptr;
@@ -52,6 +56,10 @@ class MainWindow : public QMainWindow {
     QTableWidget *table_;
     QTableWidget *processTable_;
     QTabWidget *tabs_;
+    QWidget *fileHistory_,*filePages_;
+#ifdef RESHETO_WITH_NETWORK
+    NetworkPanel *networkPanel_=nullptr;
+#endif
     QComboBox *jobs_;
     QPushButton *earlier_,*currentManual_,*currentMonitor_;
     QPushButton *newer_;
@@ -59,6 +67,7 @@ class MainWindow : public QMainWindow {
     std::vector<ResultView> resultViews_;
     int activeView_=0;
     QPlainTextEdit *details_;
+    QToolButton *detailsToggle_,*settingsToggle_;
     QProgressBar *progress_;
     QComboBox *filter_, *sort_, *direction_;
     QLineEdit *search_;
@@ -72,7 +81,7 @@ class MainWindow : public QMainWindow {
     QString probePath_, probeHeuristicPath_, jobId_, historyPath_;
     QString manualJobId_,monitorJobId_;
     qint64 jobOffset_=0,manualNotified_=0,monitorNotified_=0;
-    bool jobsDirty_=true,selectionRead_=true;
+    bool jobsDirty_=true,selectionRead_=true,hasEarlierJobs_=false;
     QList<QWidget *> manualInputs_,monitorInputs_;
     QString historyError_;
     bool stoppedByHistoryError_=false;
@@ -95,7 +104,7 @@ class MainWindow : public QMainWindow {
     void selectView(int index);
     void notify(const Job &job,qint64 &known,const QString &source);
 public:
-    explicit MainWindow(const Request &defaults,const QString &behaviorPath={},const QString &processScope={},const QString &watchPath={});
+    explicit MainWindow(const Request &defaults,const QString &behaviorPath={},const QString &processScope={},const QString &watchPath={},const QString &networkRulesPath={});
     ~MainWindow() override;
 };
 }

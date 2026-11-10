@@ -1,4 +1,5 @@
 #include "gui/mainwindow.h"
+#include "gui/startup.h"
 #include "core/database.h"
 #include "core/signatures.h"
 #include "fixtures.h"
@@ -9,6 +10,7 @@
 #include <QDir>
 #include <QComboBox>
 #include <QClipboard>
+#include <QCommandLineParser>
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -35,6 +37,75 @@ private slots:
         const int font=QFontDatabase::addApplicationFont(qEnvironmentVariable("WINDIR")+"/Fonts/segoeui.ttf");
         QVERIFY(font>=0); QApplication::setFont(QFont(QFontDatabase::applicationFontFamilies(font).front(),10));
 #endif
+    }
+    void startupFillsRulesAndAreasAndRespectsArguments() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QDir source(QStringLiteral(RESHETO_SOURCE_DIR));
+        const QDir appDir(source.filePath("data"));
+        const QDir localData(temp.filePath("local"));
+        const QDir workingDir(temp.path());
+        QCommandLineParser parser;
+        addGuiOptions(parser,appDir,workingDir);
+        QVERIFY(parser.parse({"resheto"}));
+        const auto defaults=guiStartup(parser,localData);
+        QCOMPARE(defaults.request.signaturePath,source.filePath("distribution/working/current.json"));
+        QCOMPARE(defaults.request.heuristicPath,source.filePath("data/heuristic_rules.json"));
+        QCOMPARE(defaults.behaviorPath,source.filePath("data/behavior_rules.json"));
+        QCOMPARE(defaults.request.storagePath,localData.filePath("resheto.db"));
+        QCOMPARE(defaults.request.path,defaults.watchPath);
+        QCOMPARE(defaults.watchPath,localData.filePath("resheto-work/watched"));
+        QCOMPARE(defaults.processScope,localData.filePath("resheto-work/processes"));
+        QVERIFY(QFileInfo(defaults.watchPath).isDir() && QFileInfo(defaults.processScope).isDir());
+        QVERIFY(!QFileInfo::exists(defaults.request.storagePath));
+        MainWindow window(defaults.request,defaults.behaviorPath,defaults.processScope,defaults.watchPath,defaults.networkRules);
+        QCOMPARE(window.db_->text(),defaults.request.signaturePath);
+        QCOMPARE(window.heuristics_->text(),defaults.request.heuristicPath);
+        QCOMPARE(window.behavior_->text(),defaults.behaviorPath);
+        QCOMPARE(window.path_->text(),defaults.watchPath);
+        QCOMPARE(window.watchPath_->text(),defaults.watchPath);
+        QCOMPARE(window.processScope_->text(),defaults.processScope);
+        QVERIFY(window.heuristicEnabled_->isChecked() && window.processEnabled_->isChecked());
+#ifdef RESHETO_WITH_NETWORK
+        QCOMPARE(defaults.networkRules,source.filePath("data/network_rules.json"));
+        auto *networkRules=window.findChild<QLineEdit *>("networkRules");
+        QVERIFY(networkRules);
+        QCOMPARE(networkRules->text(),defaults.networkRules);
+#endif
+        QVERIFY(!window.controller_.busy() && !window.monitor_.status().active);
+
+        const auto history=temp.filePath("custom/history.db");
+        const auto watch=temp.filePath("user-watch");
+        const auto programs=temp.filePath("user-programs");
+        QStringList args{"resheto","--db","custom.db","--heuristics","","--behavior","other.json",
+                         "--path","one-file","--watch-path",watch,"--process-scope",programs,"--storage",history};
+#ifdef RESHETO_WITH_NETWORK
+        args << "--network-rules" << "own-network.json";
+#endif
+        QCommandLineParser customParser;
+        addGuiOptions(customParser,workingDir,source);
+        QVERIFY(customParser.parse(args));
+        const auto custom=guiStartup(customParser,localData);
+        QCOMPARE(custom.request.signaturePath,QString("custom.db"));
+        QVERIFY(custom.request.heuristicPath.isEmpty());
+        QCOMPARE(custom.behaviorPath,QString("other.json"));
+        QCOMPARE(custom.request.path,QString("one-file"));
+        QCOMPARE(custom.request.storagePath,history);
+        QCOMPARE(custom.watchPath,watch);
+        QCOMPARE(custom.processScope,programs);
+        QVERIFY(!QFileInfo::exists(watch) && !QFileInfo::exists(programs));
+        QVERIFY(!QFileInfo::exists(temp.filePath("custom")));
+#ifdef RESHETO_WITH_NETWORK
+        QCOMPARE(custom.networkRules,QString("own-network.json"));
+#endif
+
+        QCommandLineParser storageParser;
+        addGuiOptions(storageParser,workingDir,source);
+        QVERIFY(storageParser.parse({"resheto","--storage",history}));
+        const auto otherHistory=guiStartup(storageParser,localData);
+        QCOMPARE(otherHistory.request.signaturePath,defaults.request.signaturePath);
+        QCOMPARE(otherHistory.watchPath,temp.filePath("custom/resheto-work/watched"));
+        QVERIFY(QFileInfo(otherHistory.watchPath).isDir() && !QFileInfo::exists(history));
     }
     void missingPreparedDataAndNewHistoryDirectory() {
         QTemporaryDir tmp(QDir::currentPath()+"/resheto-gui-paths-XXXXXX"); QVERIFY(tmp.isValid()); const auto root=tmp.path();
@@ -182,20 +253,52 @@ private slots:
     }
     void heuristicFallbackNotificationAndPartialFilter() {
         QTemporaryDir temp(QDir::currentPath()+"/gui-lab4-XXXXXX"); QVERIFY(temp.isValid()); const auto root=temp.path();
-        QFile file(root+"/positive.exe"); QVERIFY(file.open(QIODevice::WriteOnly)); file.write(fixtures::pe(true)); file.close();
+        const auto specimen=fixtures::pe(true);
+        QFile file(root+"/positive.exe"); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(specimen),specimen.size()); file.close();
         Request r; r.path=file.fileName(); r.signaturePath=root+"/missing.db"; r.heuristicPath=QStringLiteral(RESHETO_SOURCE_DIR)+"/data/heuristic_rules.json"; r.storagePath=root+"/history.db";
         MainWindow window(r); window.show(); QTRY_VERIFY_WITH_TIMEOUT(window.start_->isEnabled(),10000);
         QTest::mouseClick(window.start_,Qt::LeftButton);
         QTRY_VERIFY_WITH_TIMEOUT(window.notification_->isVisible() && window.notification_->text().contains(r.path),5000);
         const auto shownUtc=QDateTime::currentDateTimeUtc();
+        const auto primary=QStringLiteral("Область одновременно разрешает запись и исполнение");
+        QVERIFY(window.notification_->text().contains(primary));
         { Store store(r.storagePath,true); ResultQuery q; q.filter=ResultFilter::Matches; const auto rows=store.query(window.jobId_,q).rows; QCOMPARE(rows.size(),size_t(1));
           const auto latency=QDateTime::fromString(rows.front().time,Qt::ISODateWithMs).msecsTo(shownUtc); qInfo()<<"manual notification latency_ms"<<latency; QVERIFY(latency>=0 && latency<=5000); }
         QTRY_VERIFY_WITH_TIMEOUT(!window.running_,10000); QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),1,10000);
         window.filter_->setCurrentIndex(2); QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),1,10000);
         QVERIFY(window.table_->item(0,1)->text().contains(QStringLiteral("неполная")));
+        QCOMPARE(window.table_->item(0,2)->text(),primary);
         window.table_->setCurrentCell(0,0); window.showDetails(); QVERIFY(window.details_->toPlainText().contains(QStringLiteral("Полнота"))); QVERIFY(window.details_->toPlainText().contains("writable-executable"));
         { Store store(r.storagePath,true); const auto j=store.latest(); QCOMPARE(j->matches,1); QCOMPARE(j->exitCode(),2); }
         QVERIFY(window.grab().save(QDir::currentPath()+"/gui-lab4-preview.png"));
+    }
+    void legacyHeuristicHistoryShowsAndSortsConcreteRules() {
+        QTemporaryDir temp;QVERIFY(temp.isValid());const auto specimens=temp.filePath("files");QVERIFY(QDir().mkpath(specimens));
+        auto outside=fixtures::pe(false),both=fixtures::pe(true);
+        qToLittleEndian<quint32>(0x1900,outside.data()+168);qToLittleEndian<quint32>(0x1900,both.data()+168);
+        for(const auto &[name,bytes]:std::initializer_list<std::pair<QString,QByteArray>>{{"a-writable.exe",both},{"z-entry.exe",outside}}) {
+            QFile file(specimens+"/"+name);QVERIFY(file.open(QIODevice::WriteOnly));QCOMPARE(file.write(bytes),bytes.size());
+        }
+        Request r;r.path=specimens;r.heuristicPath=QStringLiteral(RESHETO_SOURCE_DIR)+"/data/heuristic_rules.json";r.storagePath=temp.filePath("history.db");
+        const auto job=runJob(r);QCOMPARE(job.matches,qint64(2));QCOMPARE(job.exitCode(),1);
+        const auto generic=QStringLiteral("Эвристические признаки PE");
+        {
+            Database legacy(r.storagePath,false);
+            legacy.exec("UPDATE results SET data=json_set(data,'$.rule_name',?) WHERE job_id=?",{generic,job.id});
+            legacy.exec("UPDATE jobs SET data=json_set(data,'$.last_detection_name',?) WHERE id=?",{generic,job.id});
+        }
+        {
+            Store history(r.storagePath,true);const auto old=history.getJob(job.id);QVERIFY(old);QCOMPARE(old->detectionName,generic);
+            ResultQuery query;query.sort=ResultSort::Signature;query.limit=1;const auto page=history.query(job.id,query);
+            QCOMPARE(page.total,qint64(2));QCOMPARE(page.rows.size(),size_t(1));QCOMPARE(page.rows.front().ruleId,QString("entry-outside-executable"));
+        }
+        MainWindow window(r);window.show();window.sort_->setCurrentIndex(3);
+        QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),2,5000);
+        QCOMPARE(window.table_->item(0,2)->text(),QStringLiteral("Ненулевая точка входа находится вне исполняемой области"));
+        QCOMPARE(window.table_->item(1,2)->text(),QStringLiteral("Область одновременно разрешает запись и исполнение"));
+        window.table_->setCurrentCell(1,0);window.showDetails();
+        QVERIFY(window.details_->toPlainText().contains(QStringLiteral("• Область одновременно разрешает запись и исполнение [writable-executable")));
+        QVERIFY(window.details_->toPlainText().contains(QStringLiteral("• Ненулевая точка входа находится вне исполняемой области [entry-outside-executable")));
     }
     void monitorControlsAndPersistentHistoryError() {
         QTemporaryDir temp(QDir::currentPath()+"/gui-monitor-XXXXXX"); QVERIFY(temp.isValid()); const auto root=temp.path(); QVERIFY(QDir().mkpath(root+"/area"));
@@ -272,8 +375,11 @@ private slots:
         QTemporaryDir temp(QDir::currentPath()+"/gui-jobs-XXXXXX"); QVERIFY(temp.isValid()); Request r; r.storagePath=temp.path()+"/history.db";
         {Store store(r.storagePath); for(int i=0;i<52;++i) {Job j;j.id=QString("job-%1").arg(i);j.path="controlled";j.databaseVersion="control";j.started=now();j.finished=now();j.state="completed";store.start(j);store.finish(j);}}
         MainWindow window(r); window.show(); QTRY_VERIFY_WITH_TIMEOUT(window.jobs_->findData("job-51")>=0,5000); const auto selected=window.jobId_;
-        QTest::mouseClick(window.earlier_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(window.jobs_->findData("job-0")>=0,5000); window.jobs_->setCurrentIndex(window.jobs_->findData("job-0")); QTRY_VERIFY_WITH_TIMEOUT(window.summary_->text().contains("job-0"),5000);
-        QTest::mouseClick(window.newer_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(window.jobs_->findData(selected)>=0,5000); QCOMPARE(window.jobId_,QString("job-0")); QVERIFY(window.summary_->text().contains("job-0"));
+        QVERIFY(window.earlier_->isVisible());QVERIFY(!window.newer_->isVisible());
+        QTest::mouseClick(window.earlier_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(window.jobs_->findData("job-0")>=0,5000); QVERIFY(!window.earlier_->isVisible());QVERIFY(window.newer_->isVisible());window.jobs_->setCurrentIndex(window.jobs_->findData("job-0")); QTRY_VERIFY_WITH_TIMEOUT(window.summary_->text().contains("job-0"),5000);
+        QTest::mouseClick(window.newer_,Qt::LeftButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!window.view_.valid() && window.jobs_->findData("job-50")>=0 && !window.newer_->isVisible(),5000);
+        QVERIFY(window.jobs_->findData(selected)>=0);QCOMPARE(window.jobId_,QString("job-0"));QVERIFY(window.summary_->text().contains("job-0"));
     }
 };
 QTEST_MAIN(GuiTests)

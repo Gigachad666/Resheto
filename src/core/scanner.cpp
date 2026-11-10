@@ -98,7 +98,7 @@ Result scanFile(const QString &path,const Request &request) {
                 }
                 if(decision.suspicious) {
                     r.outcome="heuristic_match"; const auto first=decision.matched.first().toObject();
-                    r.ruleId=first["id"].toString(); r.ruleName=QStringLiteral("Эвристические признаки %1").arg(decision.format); r.ruleVersion=first["version"].toString();
+                    r.ruleId=first["id"].toString(); r.ruleName=first["description"].toString(); r.ruleVersion=first["version"].toString();
                     QStringList descriptions; for(const auto &rule:decision.matched) descriptions.push_back(rule.toObject()["description"].toString());
                     r.basis=QStringLiteral("%1; сумма %2, порог %3; набор %4").arg(descriptions.join("; ")).arg(decision.score).arg(decision.threshold).arg(decision.version);
                 }

@@ -52,10 +52,10 @@ if ($Control) {
 }
 if (!(Test-Path -LiteralPath $signatures -PathType Leaf)) { throw "Не найдена выбранная база: $signatures" }
 $storage = Join-Path $manual 'results.db'
-Write-Output "Объект: $object"
+if ($object) { Write-Output "Объект: $object" }
+else { Write-Output 'Объект: каталог файлового наблюдения по умолчанию' }
 Write-Output "Сигнатуры: $signatures"
 Write-Output "История: $storage"
-if (!$object) { Write-Output 'Выберите файл или каталог кнопкой в окне программы.' }
 if (!$NoLaunch) {
     $guiArguments = @('--db', $signatures, '--storage', $storage)
     if ($Lab4) { $guiArguments += @('--heuristics', (Join-Path $tools.Project 'data/heuristic_rules.json'), '--behavior', (Join-Path $tools.Project 'data/behavior_rules.json'), '--process-scope', (Join-Path $lab4Dir 'processes'), '--watch-path', $watchDir) }

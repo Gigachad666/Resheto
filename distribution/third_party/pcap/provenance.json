@@ -1,0 +1,42 @@
+{
+  "component": "Public pcap headers",
+  "source": "Npcap SDK",
+  "sdk_version": "1.17",
+  "url": "https://npcap.com/dist/npcap-sdk-1.17.zip",
+  "sdk_sha256": "ab7e1a6cb8d07427e0071ec11be380bd9d2bb19ae6ab3f5ede0698c301638258",
+  "sdk_bytes": 399920,
+  "prepared": "2026-11-06",
+  "headers_unmodified": true,
+  "runtime_binaries_included": false,
+  "license": "Original permissive BSD notices are retained in each header; see README.md acknowledgement",
+  "headers": [
+    {
+      "path": "src/network/vendor/pcap/pcap.h",
+      "sha256": "cf98008c423e0847159cab12339ba7c6726d2102f1eaf514ffd6784be5e349fe"
+    },
+    {
+      "path": "src/network/vendor/pcap/bpf.h",
+      "sha256": "21a123b3e5e79f884cb1ee229a9a7e24a5217a00fc221a4a69b0b51e0697854e"
+    },
+    {
+      "path": "src/network/vendor/pcap/dlt.h",
+      "sha256": "a0f067d372695da1ea4a11164cfef970af1333b0f7ca74de377384c06422877f"
+    },
+    {
+      "path": "src/network/vendor/pcap/funcattrs.h",
+      "sha256": "0078f8d8e6207c3f641057a60008ca691d238148a4291810247925a2c10c57bf"
+    },
+    {
+      "path": "src/network/vendor/pcap/compiler-tests.h",
+      "sha256": "0cceec0986c127dd5404954627db80d2e8bfcec3d06d913a639630e7e464af23"
+    },
+    {
+      "path": "src/network/vendor/pcap/pcap-inttypes.h",
+      "sha256": "c1055294511d321dff4469c05466773c3d85d89d2d7921f15610328ee5171d7d"
+    },
+    {
+      "path": "src/network/vendor/pcap/socket.h",
+      "sha256": "b9195373a4fa5ad5d2f55fe335a0a0d0c0e33b695a4c1f8efc69a05dc1ec6dd1"
+    }
+  ]
+}

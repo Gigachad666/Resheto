@@ -1,10 +1,14 @@
 #include "mainwindow.h"
+#ifdef RESHETO_WITH_NETWORK
+#include "networkpanel.h"
+#endif
 #include "core/signatures.h"
 #include "core/heuristic.h"
 #include <QCheckBox>
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
+#include <QDialog>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -13,12 +17,16 @@
 #include <QLineEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QSplitter>
 #include <QTableWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QTabWidget>
 #include <QPlainTextEdit>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QSignalBlocker>
 
@@ -27,13 +35,42 @@ namespace {
 QString shortSummary(const Job &j) {
     return QStringLiteral("%1; проверено %2; совпадений %3; ошибок %4").arg(stateText(j.state)).arg(j.checked).arg(j.matches).arg(j.errors);
 }
+QString shownDetectionName(const Result &result) {
+    if(result.outcome=="heuristic_match") {
+        for(const auto &value:result.details["matched"].toArray()) {
+            const auto rule=value.toObject();
+            if(rule["id"]==result.ruleId && rule["version"]==result.ruleVersion) {
+                const auto description=rule["description"].toString();
+                if(!description.isEmpty())return description;
+            }
+        }
+    }
+    return detectionName(result);
 }
-MainWindow::MainWindow(const Request &defaults,const QString &behaviorPath,const QString &processScope,const QString &watchPath) {
+}
+MainWindow::MainWindow(const Request &defaults,const QString &behaviorPath,const QString &processScope,const QString &watchPath,[[maybe_unused]] const QString &networkRulesPath) {
     manualHooks_=defaults.hooks;
-    setWindowTitle(QStringLiteral("АС Решето — анализ файлов и наблюдение")); resize(1200,900);
+    setWindowTitle(QStringLiteral("АС Решето")); resize(1100,760);
     auto *central=new QWidget(this); setCentralWidget(central); auto *layout=new QVBoxLayout(central);
-    auto *title=new QLabel(QStringLiteral("АС Решето")); title->setStyleSheet("font-size:24px; font-weight:600"); layout->addWidget(title);
-    auto *settings=new QGridLayout; layout->addLayout(settings);
+    layout->setSpacing(4);
+    auto *top=new QHBoxLayout;layout->addLayout(top);
+    settingsToggle_=new QToolButton;settingsToggle_->setObjectName("fileSettingsToggle");
+    settingsToggle_->setText(QStringLiteral("Параметры проверки и наблюдения"));settingsToggle_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    settingsToggle_->setCheckable(true);settingsToggle_->setArrowType(Qt::RightArrow);top->addWidget(settingsToggle_);
+    auto *settingsDialog=new QDialog(this,Qt::Tool);settingsDialog->setObjectName("fileSettingsDialog");
+    settingsDialog->setWindowTitle(QStringLiteral("Параметры проверки и наблюдения"));settingsDialog->resize(650,330);
+    auto *dialogLayout=new QVBoxLayout(settingsDialog);
+    auto *settingsScroll=new QScrollArea;settingsScroll->setObjectName("fileSettings");settingsScroll->setWidgetResizable(true);
+    settingsScroll->setFrameShape(QFrame::NoFrame);dialogLayout->addWidget(settingsScroll,1);
+    auto *settingsBody=new QWidget;auto *settingsLayout=new QVBoxLayout(settingsBody);settingsLayout->setContentsMargins(0,0,0,0);settingsScroll->setWidget(settingsBody);
+    auto *settings=new QGridLayout;settingsLayout->addLayout(settings);
+    auto *closeSettings=new QPushButton(QStringLiteral("Закрыть"));dialogLayout->addWidget(closeSettings,0,Qt::AlignRight);
+    connect(closeSettings,&QPushButton::clicked,settingsDialog,&QDialog::close);
+    connect(settingsDialog,&QDialog::finished,this,[this]{settingsToggle_->setChecked(false);});
+    connect(settingsToggle_,&QToolButton::toggled,this,[this,settingsDialog](bool expanded){
+        settingsToggle_->setArrowType(expanded?Qt::DownArrow:Qt::RightArrow);
+        settingsDialog->setVisible(expanded);
+    });
     db_=new QLineEdit(defaults.signaturePath.isEmpty()?QString():absolute(defaults.signaturePath)); db_->setObjectName("database");
     storage_=new QLineEdit(defaults.storagePath.isEmpty()?QString():absolute(defaults.storagePath)); storage_->setObjectName("storage"); historyPath_=storage_->text();
     auto *base=new QPushButton(QStringLiteral("Выбрать…")); auto *heuristicChoose=new QPushButton(QStringLiteral("Выбрать…")); auto *behaviorChoose=new QPushButton(QStringLiteral("Выбрать…"));
@@ -41,8 +78,8 @@ MainWindow::MainWindow(const Request &defaults,const QString &behaviorPath,const
     heuristicEnabled_=new QCheckBox(QStringLiteral("Статическая эвристика")); heuristicEnabled_->setObjectName("heuristicEnabled"); heuristicEnabled_->setChecked(!defaults.heuristicPath.isEmpty());
     heuristics_=new QLineEdit(defaults.heuristicPath); heuristics_->setObjectName("heuristics"); settings->addWidget(heuristicEnabled_,1,0); settings->addWidget(heuristics_,1,1); settings->addWidget(heuristicChoose,1,2);
     behavior_=new QLineEdit(behaviorPath); behavior_->setObjectName("behavior"); settings->addWidget(new QLabel(QStringLiteral("Правила поведения")),2,0); settings->addWidget(behavior_,2,1); settings->addWidget(behaviorChoose,2,2);
-    settings->addWidget(new QLabel(QStringLiteral("История")),3,0); settings->addWidget(storage_,3,1,1,2);
-    databaseState_=new QLabel; databaseState_->setObjectName("databaseState"); databaseState_->setWordWrap(true); layout->addWidget(databaseState_);
+    top->addWidget(new QLabel(QStringLiteral("Файл истории")));top->addWidget(storage_,1);
+    databaseState_=new QLabel; databaseState_->setObjectName("databaseState"); databaseState_->setWordWrap(true); settingsLayout->addWidget(databaseState_);
     auto *manual=new QHBoxLayout; layout->addLayout(manual);
     path_=new QLineEdit(defaults.path.isEmpty()?QString():absolute(defaults.path)); path_->setObjectName("path"); path_->setAccessibleName(QStringLiteral("Путь ручной проверки"));
     auto *file=new QPushButton(QStringLiteral("Файл…")); auto *folder=new QPushButton(QStringLiteral("Каталог…"));
@@ -51,7 +88,7 @@ MainWindow::MainWindow(const Request &defaults,const QString &behaviorPath,const
     manual->addWidget(new QLabel(QStringLiteral("Вручную"))); manual->addWidget(path_,1); manual->addWidget(file); manual->addWidget(folder); manual->addWidget(recursive_); manual->addWidget(start_); manual->addWidget(stop_);
     manualState_=new QLabel(QStringLiteral("Ручная проверка не запущена")); manualState_->setObjectName("manualState"); manualState_->setWordWrap(true); layout->addWidget(manualState_);
     progress_=new QProgressBar; progress_->setTextVisible(false); progress_->setRange(0,1); progress_->setValue(0); progress_->setMaximumHeight(6); layout->addWidget(progress_);
-    auto *watchSettings=new QGridLayout; layout->addLayout(watchSettings);
+    auto *watchSettings=new QGridLayout; settingsLayout->addLayout(watchSettings);
     fileEnabled_=new QCheckBox(QStringLiteral("Наблюдать файлы")); fileEnabled_->setObjectName("fileEnabled"); fileEnabled_->setChecked(true);
     watchPath_=new QLineEdit(watchPath.isEmpty()?defaults.path:watchPath); watchPath_->setObjectName("watchPath"); watchPath_->setPlaceholderText(QStringLiteral("Каталог файлового наблюдения"));
     auto *watchChoose=new QPushButton(QStringLiteral("Каталог…")); watchSettings->addWidget(fileEnabled_,0,0); watchSettings->addWidget(watchPath_,0,1); watchSettings->addWidget(watchChoose,0,2);
@@ -59,19 +96,23 @@ MainWindow::MainWindow(const Request &defaults,const QString &behaviorPath,const
     processEnabled_=new QCheckBox(QStringLiteral("Наблюдать процессы")); processEnabled_->setObjectName("processEnabled"); processEnabled_->setChecked(!behaviorPath.isEmpty());
     processScope_=new QLineEdit(processScope.isEmpty()?watchPath_->text():processScope); processScope_->setObjectName("processScope"); processScope_->setPlaceholderText(QStringLiteral("Каталог программ для наблюдения"));
     auto *scopeChoose=new QPushButton(QStringLiteral("Каталог…")); watchSettings->addWidget(processEnabled_,1,0); watchSettings->addWidget(processScope_,1,1); watchSettings->addWidget(scopeChoose,1,2);
-    processImages_=new QCheckBox(QStringLiteral("Проверять файлы процессов: сигнатуры и включённая эвристика")); processImages_->setObjectName("processImages"); processImages_->setToolTip(QStringLiteral("Проверяет файл по пути образа; связь сохраняется с PID и временем старта. Память процесса не читается.")); watchSettings->addWidget(processImages_,2,1);
+    processImages_=new QCheckBox(QStringLiteral("Проверять файлы процессов: сигнатуры и включённая эвристика")); processImages_->setObjectName("processImages"); processImages_->setToolTip(QStringLiteral("Проверяет файл по пути образа; связь сохраняется с PID и временем старта. Память процесса не читается.")); watchSettings->addWidget(processImages_,2,0,1,4);
     watch_=new QPushButton(QStringLiteral("Начать наблюдение")); watch_->setObjectName("watch"); watch_->setEnabled(false); watchStop_=new QPushButton(QStringLiteral("Остановить наблюдение")); watchStop_->setObjectName("watchStop"); watchStop_->setEnabled(false);
-    auto *watchActions=new QHBoxLayout; watchActions->addWidget(watch_); watchActions->addWidget(watchStop_); watchSettings->addLayout(watchActions,2,2);
-    monitorState_=new QLabel(QStringLiteral("Наблюдение не запущено")); monitorState_->setObjectName("monitorState"); monitorState_->setWordWrap(true); layout->addWidget(monitorState_);
+    auto *watchActions=new QHBoxLayout;layout->addLayout(watchActions);
+    monitorState_=new QLabel(QStringLiteral("Наблюдение не запущено")); monitorState_->setObjectName("monitorState"); monitorState_->setWordWrap(true);
+    watchActions->addWidget(monitorState_,1);watchActions->addWidget(watch_);watchActions->addWidget(watchStop_);
     historyErrorLabel_=new QLabel; historyErrorLabel_->setObjectName("historyError"); historyErrorLabel_->setWordWrap(true); historyErrorLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse); historyErrorLabel_->hide(); layout->addWidget(historyErrorLabel_);
-    notification_=new QLabel; notification_->setObjectName("notification"); notification_->setWordWrap(true); notification_->setTextInteractionFlags(Qt::TextSelectableByMouse); notification_->hide(); layout->addWidget(notification_);
-    auto *history=new QHBoxLayout; layout->addLayout(history); history->addWidget(new QLabel(QStringLiteral("Результаты задания")));
+    notification_=new QLabel; notification_->setObjectName("notification"); notification_->setTextFormat(Qt::PlainText); notification_->setWordWrap(true); notification_->setTextInteractionFlags(Qt::TextSelectableByMouse); notification_->hide(); layout->addWidget(notification_);
+    fileHistory_=new QWidget;fileHistory_->setObjectName("fileHistoryControls");layout->addWidget(fileHistory_);
+    auto *history=new QHBoxLayout(fileHistory_);history->setContentsMargins(0,0,0,0);history->addWidget(new QLabel(QStringLiteral("Результаты задания")));
     jobs_=new QComboBox; jobs_->setObjectName("jobs"); jobs_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon); jobs_->setMinimumContentsLength(30); history->addWidget(jobs_,1);
-    earlier_=new QPushButton(QStringLiteral("Ранее…")); earlier_->setObjectName("earlierJobs"); history->addWidget(earlier_);
-    newer_=new QPushButton(QStringLiteral("Новые")); newer_->setObjectName("newerJobs"); history->addWidget(newer_);
+    jobs_->setAccessibleName(QStringLiteral("Файловые и процессные задания"));
+    earlier_=new QPushButton(QStringLiteral("Более ранние задания")); earlier_->setObjectName("earlierJobs"); earlier_->hide(); history->addWidget(earlier_);
+    newer_=new QPushButton(QStringLiteral("К новым заданиям")); newer_->setObjectName("newerJobs"); newer_->hide(); history->addWidget(newer_);
     currentManual_=new QPushButton(QStringLiteral("Показать проверку")); currentManual_->setObjectName("currentManual"); history->addWidget(currentManual_); currentMonitor_=new QPushButton(QStringLiteral("Показать наблюдение")); currentMonitor_->setObjectName("currentMonitor"); history->addWidget(currentMonitor_);
     summary_=new QLabel(QStringLiteral("Готово к выбору области проверки")); summary_->setObjectName("summary"); summary_->setWordWrap(true); summary_->setTextInteractionFlags(Qt::TextSelectableByMouse); layout->addWidget(summary_);
-    tabs_=new QTabWidget; tabs_->setObjectName("resultTabs"); layout->addWidget(tabs_,1);
+    auto *resultsArea=new QSplitter(Qt::Horizontal);resultsArea->setChildrenCollapsible(false);layout->addWidget(resultsArea,1);
+    tabs_=new QTabWidget; tabs_->setObjectName("resultTabs"); resultsArea->addWidget(tabs_);
     for(int i=0;i<3;++i) {
         auto *page=new QWidget; auto *body=new QVBoxLayout(page); ResultView v;
         if(i==2) {
@@ -92,27 +133,42 @@ MainWindow::MainWindow(const Request &defaults,const QString &behaviorPath,const
         auto *debounce=new QTimer(this); debounce->setSingleShot(true); debounce->setInterval(250); connect(v.search,&QLineEdit::textChanged,debounce,qOverload<>(&QTimer::start)); connect(debounce,&QTimer::timeout,this,changed); connect(v.table,&QTableWidget::itemSelectionChanged,this,[this,i]{if(activeView_==i) showDetails();});
         tabs_->addTab(page,i==0?QStringLiteral("Ручная проверка"):i==1?QStringLiteral("Файловое наблюдение"):QStringLiteral("Процессы"));
     }
+#ifdef RESHETO_WITH_NETWORK
+    networkPanel_=new NetworkPanel(storage_->text(),networkRulesPath);
+    const int networkIndex=tabs_->addTab(networkPanel_,QStringLiteral("Сеть"));
+    connect(networkPanel_,&NetworkPanel::activeChanged,this,[this]{setInputsEnabled(true);});
+    connect(networkPanel_,&NetworkPanel::detectionNotice,this,[this,networkIndex](qint64 count){tabs_->setTabText(networkIndex,count && tabs_->currentIndex()!=networkIndex?QStringLiteral("Сеть · %1").arg(count):QStringLiteral("Сеть"));});
+#endif
     table_=resultViews_[0].table; filter_=resultViews_[0].filter; search_=resultViews_[0].search; sort_=resultViews_[0].sort; direction_=resultViews_[0].direction;
-    details_=new QPlainTextEdit; details_->setObjectName("details"); details_->setReadOnly(true); details_->setMaximumHeight(165); details_->hide(); layout->addWidget(details_);
-    auto *pages=new QHBoxLayout; layout->addLayout(pages); pageState_=new QLabel; pages->addWidget(pageState_); pages->addStretch();
+    details_=new QPlainTextEdit;details_->setObjectName("details");details_->setReadOnly(true);details_->setMinimumWidth(180);details_->setMaximumWidth(330);
+    resultsArea->addWidget(details_);resultsArea->setStretchFactor(0,1);details_->hide();
+    filePages_=new QWidget;filePages_->setObjectName("filePageControls");layout->addWidget(filePages_);
+    auto *pages=new QHBoxLayout(filePages_);pages->setContentsMargins(0,0,0,0);pageState_=new QLabel; pages->addWidget(pageState_); pages->addStretch();
     first_=new QPushButton(QStringLiteral("С начала")); next_=new QPushButton(QStringLiteral("Следующие 200")); next_->setObjectName("next"); pages->addWidget(first_); pages->addWidget(next_);
     auto *copyPath=new QPushButton(QStringLiteral("Копировать путь")); copyPath->setObjectName("copyPath"); pages->addWidget(copyPath); auto *copyBasis=new QPushButton(QStringLiteral("Копировать основание")); copyBasis->setObjectName("copyBasis"); pages->addWidget(copyBasis);
+    detailsToggle_=new QToolButton;detailsToggle_->setObjectName("fileDetailsToggle");detailsToggle_->setText(QStringLiteral("Подробности"));detailsToggle_->setCheckable(true);detailsToggle_->setChecked(true);detailsToggle_->setEnabled(false);pages->addWidget(detailsToggle_);
+    connect(detailsToggle_,&QToolButton::toggled,this,[this]{showDetails();});
     connect(copyPath,&QPushButton::clicked,this,[this]{const int row=table_->currentRow(); if(row>=0 && row<static_cast<int>(visibleRows_.size())) QApplication::clipboard()->setText(visibleRows_[row].path);});
     connect(copyBasis,&QPushButton::clicked,this,[this]{const int row=table_->currentRow(); if(row>=0 && row<static_cast<int>(visibleRows_.size())) { const auto &r=visibleRows_[row]; QString context; if(row<static_cast<int>(visibleEvents_.size()) && visibleEvents_[row]["type"]=="process_image") context=QString::fromUtf8(QJsonDocument(visibleEvents_[row]["details"].toObject()).toJson(QJsonDocument::Indented))+"\n"; QApplication::clipboard()->setText(context+r.basis+(r.details.isEmpty()?QString():"\n"+QString::fromUtf8(QJsonDocument(r.details).toJson(QJsonDocument::Indented)))); }});
     inputs_={db_,storage_,base,heuristicEnabled_,heuristics_,heuristicChoose,behavior_,behaviorChoose}; manualInputs_={path_,recursive_,file,folder}; monitorInputs_={watchPath_,watchChoose,watchRecursive_,fileEnabled_,processEnabled_,processScope_,scopeChoose,processImages_};
     connect(file,&QPushButton::clicked,this,[this]{auto p=QFileDialog::getOpenFileName(this,QStringLiteral("Выберите файл")); if(!p.isEmpty()) path_->setText(p);}); connect(folder,&QPushButton::clicked,this,[this]{auto p=QFileDialog::getExistingDirectory(this,QStringLiteral("Выберите каталог")); if(!p.isEmpty()) path_->setText(p);});
-    connect(watchChoose,&QPushButton::clicked,this,[this]{auto p=QFileDialog::getExistingDirectory(this,QStringLiteral("Каталог файлового наблюдения")); if(!p.isEmpty()) watchPath_->setText(p);}); connect(scopeChoose,&QPushButton::clicked,this,[this]{auto p=QFileDialog::getExistingDirectory(this,QStringLiteral("Каталог образов процессов")); if(!p.isEmpty()) processScope_->setText(p);});
-    connect(base,&QPushButton::clicked,this,[this]{auto p=QFileDialog::getOpenFileName(this,QStringLiteral("База сигнатур / указатель версии"),{},"SQLite / версии (*.db *.json);;Все файлы (*)"); if(!p.isEmpty()) db_->setText(p);});
-    connect(heuristicChoose,&QPushButton::clicked,this,[this]{auto p=QFileDialog::getOpenFileName(this,QStringLiteral("Эвристические правила"),{},"JSON (*.json)"); if(!p.isEmpty()) { heuristics_->setText(p); heuristicEnabled_->setChecked(true); }}); connect(behaviorChoose,&QPushButton::clicked,this,[this]{auto p=QFileDialog::getOpenFileName(this,QStringLiteral("Поведенческие правила"),{},"JSON (*.json)"); if(!p.isEmpty()) behavior_->setText(p);});
+    connect(watchChoose,&QPushButton::clicked,this,[this,settingsDialog]{auto p=QFileDialog::getExistingDirectory(settingsDialog,QStringLiteral("Каталог файлового наблюдения")); if(!p.isEmpty()) watchPath_->setText(p);}); connect(scopeChoose,&QPushButton::clicked,this,[this,settingsDialog]{auto p=QFileDialog::getExistingDirectory(settingsDialog,QStringLiteral("Каталог образов процессов")); if(!p.isEmpty()) processScope_->setText(p);});
+    connect(base,&QPushButton::clicked,this,[this,settingsDialog]{auto p=QFileDialog::getOpenFileName(settingsDialog,QStringLiteral("База сигнатур / указатель версии"),{},"SQLite / версии (*.db *.json);;Все файлы (*)"); if(!p.isEmpty()) db_->setText(p);});
+    connect(heuristicChoose,&QPushButton::clicked,this,[this,settingsDialog]{auto p=QFileDialog::getOpenFileName(settingsDialog,QStringLiteral("Эвристические правила"),{},"JSON (*.json)"); if(!p.isEmpty()) { heuristics_->setText(p); heuristicEnabled_->setChecked(true); }}); connect(behaviorChoose,&QPushButton::clicked,this,[this,settingsDialog]{auto p=QFileDialog::getOpenFileName(settingsDialog,QStringLiteral("Поведенческие правила"),{},"JSON (*.json)"); if(!p.isEmpty()) behavior_->setText(p);});
     connect(db_,&QLineEdit::textChanged,this,[this]{databaseReady_=false; start_->setEnabled(false); databaseState_->setText(QStringLiteral("Проверка базы…")); probe();}); auto changedHeuristics=[this]{heuristicReady_=false; start_->setEnabled(false); probe();}; connect(heuristicEnabled_,&QCheckBox::toggled,this,changedHeuristics); connect(heuristics_,&QLineEdit::textChanged,this,changedHeuristics);
     connect(start_,&QPushButton::clicked,this,[this]{start();}); connect(stop_,&QPushButton::clicked,this,[this]{controller_.cancel(); stop_->setEnabled(false); manualState_->setText(QStringLiteral("Отмена ручной проверки запрошена…"));}); connect(watch_,&QPushButton::clicked,this,[this]{startMonitor();}); connect(watchStop_,&QPushButton::clicked,this,[this]{monitor_.cancel(); watchStop_->setEnabled(false);});
     connect(storage_,&QLineEdit::editingFinished,this,[this]{loadHistory();}); connect(first_,&QPushButton::clicked,this,[this]{resetPage(); readPage();}); connect(next_,&QPushButton::clicked,this,[this]{resetPage(false); readPage();}); connect(tabs_,&QTabWidget::currentChanged,this,[this](int index){selectView(index);}); connect(processSearch_,&QLineEdit::textChanged,this,[this]{showProcesses();});
-    connect(jobs_,&QComboBox::currentIndexChanged,this,[this](int index){if(index>=0) selectJob(jobs_->itemData(index).toString());}); connect(earlier_,&QPushButton::clicked,this,[this]{jobOffset_+=50; jobsDirty_=true; needRead_=true;});
-    connect(newer_,&QPushButton::clicked,this,[this]{jobOffset_=0; jobsDirty_=true; needRead_=true;});
+    connect(jobs_,&QComboBox::currentIndexChanged,this,[this](int index){if(index>=0) selectJob(jobs_->itemData(index).toString());}); connect(earlier_,&QPushButton::clicked,this,[this]{earlier_->setEnabled(false); jobOffset_+=50; jobsDirty_=true; needRead_=true;});
+    connect(newer_,&QPushButton::clicked,this,[this]{newer_->setEnabled(false); jobOffset_=0; jobsDirty_=true; needRead_=true;});
     connect(currentManual_,&QPushButton::clicked,this,[this]{tabs_->setCurrentIndex(0); selectJob(manualJobId_);}); connect(currentMonitor_,&QPushButton::clicked,this,[this]{if(activeView_==0) tabs_->setCurrentIndex(fileEnabled_->isChecked()?1:2); selectJob(monitorJobId_);});
     auto *timer=new QTimer(this); timer->setInterval(150); connect(timer,&QTimer::timeout,this,[this]{tick();}); timer->start(); probe();
 }
-MainWindow::~MainWindow() { controller_.cancel(); monitor_.cancel(); }
+MainWindow::~MainWindow() {
+    controller_.cancel();monitor_.cancel();
+#ifdef RESHETO_WITH_NETWORK
+    networkPanel_->cancel();
+#endif
+}
 void MainWindow::probe() {
     if(probe_.valid() || running_ || monitorActive_) return;
     probePath_=db_->text(); probeHeuristicPath_=heuristicEnabled_->isChecked()?heuristics_->text():QString(); const auto path=probePath_,heuristic=probeHeuristicPath_;
@@ -124,6 +180,9 @@ void MainWindow::probe() {
 }
 void MainWindow::setInputsEnabled(bool) {
     for(auto *w:inputs_) w->setEnabled(!running_ && !monitorActive_); for(auto *w:manualInputs_) w->setEnabled(!running_); for(auto *w:monitorInputs_) w->setEnabled(!monitorActive_); processImages_->setEnabled(!monitorActive_ && processEnabled_->isChecked());
+#ifdef RESHETO_WITH_NETWORK
+    if(networkPanel_->busy())storage_->setEnabled(false);
+#endif
 }
 void MainWindow::showProcesses() {
     const auto processes=monitor_.processes(); const auto search=processSearch_->text(); qint64 matching=0; processTable_->setRowCount(0);
@@ -136,20 +195,42 @@ void MainWindow::showProcesses() {
     processState_->setText(QStringLiteral("В выбранной области: %1; по поиску: %2; показано: %3").arg(processes.size()).arg(matching).arg(processTable_->rowCount())); processState_->setToolTip(monitor_.status().coverage);
 }
 void MainWindow::showDetails() {
-    const int row=table_->currentRow(); if(row<0 || row>=static_cast<int>(visibleRows_.size())) { details_->hide(); return; } const auto &r=visibleRows_[row]; QString text=outcomeText(r)+"\n";
+    if(tabs_->currentIndex()!=activeView_)return;
+    const int row=table_->currentRow();const bool selected=row>=0 && row<static_cast<int>(visibleRows_.size());detailsToggle_->setEnabled(selected);
+    if(!selected) { details_->hide(); return; } const auto &r=visibleRows_[row]; QString text=outcomeText(r)+"\n";
     if(row<static_cast<int>(visibleEvents_.size()) && !visibleEvents_[row].isEmpty()) {
         const auto event=visibleEvents_[row],e=event["details"].toObject(),p=e["process"].toObject(); const auto operation=e["operation"].toString();
         if(event["type"]=="process_image") text+=QStringLiteral("Проверка файла процесса: PID %1; ID запуска %2\nФайл: %3\n").arg(p["pid"].toString(),p["start_time"].toString(),p["image"].toString());
         else text+=QStringLiteral("Событие: %1; %2\n").arg(operation=="created"?QStringLiteral("создание файла"):operation=="modified"?QStringLiteral("изменение файла"):operation=="child_start"?QStringLiteral("наблюдение дочернего процесса"):operation,e["time"].toString());
     }
     if(r.source=="behavioral") { const auto p=r.details["process"].toObject(); text+=QStringLiteral("Процесс: PID %1; ID запуска %2\n").arg(p["pid"].toString(),p["start_time"].toString()); }
-    if(isDetection(r)) text+=QStringLiteral("Обнаружение: %1\nПравило: %2; версия %3\nОснование: %4\n").arg(detectionName(r),r.source=="signature"?r.signatureId:r.ruleId,r.source=="signature"?r.signatureVersion:r.ruleVersion,r.basis);
+    if(isDetection(r)) {
+        text+=QStringLiteral("Обнаружение: %1\nОснование: %2\n").arg(shownDetectionName(r),r.basis);
+        if(r.outcome=="heuristic_match") {
+            text+=QStringLiteral("Сработавшие правила:\n");
+            for(const auto &value:r.details["matched"].toArray()) {
+                const auto rule=value.toObject();
+                text+=QStringLiteral("• %1 [%2, версия %3]\n").arg(rule["description"].toString(),rule["id"].toString(),rule["version"].toString());
+            }
+        } else {
+            text+=QStringLiteral("Правило: %1, версия %2\n").arg(r.source=="signature"?r.signatureId:r.ruleId,r.source=="signature"?r.signatureVersion:r.ruleVersion);
+        }
+    }
     text+=QStringLiteral("Полнота: %1; версия базы/набора: %2\n").arg(r.completeness=="full"?QStringLiteral("завершён"):r.completeness=="partial"?QStringLiteral("неполная"):QStringLiteral("не проверен"),r.source=="signature"?r.databaseVersion:r.rulesVersion);
     if(!r.reason.isEmpty()) text+=QStringLiteral("Ошибка / ограничение: %1 [%2]\n").arg(r.reason,r.code);
-    if(!r.details.isEmpty()) text+=QStringLiteral("\nТехнические основания:\n")+QString::fromUtf8(QJsonDocument(r.details).toJson(QJsonDocument::Indented)); details_->setPlainText(text); details_->show();
+    if(!r.details.isEmpty()) text+=QStringLiteral("\nТехнические основания:\n")+QString::fromUtf8(QJsonDocument(r.details).toJson(QJsonDocument::Indented));
+    details_->setPlainText(text);details_->setVisible(detailsToggle_->isChecked());
 }
 void MainWindow::selectView(int index) {
-    if(index<0 || index>=static_cast<int>(resultViews_.size())) return;
+    const bool files=index>=0 && index<static_cast<int>(resultViews_.size());
+    fileHistory_->setVisible(files);filePages_->setVisible(files);summary_->setVisible(files);
+    if(!files) {
+        details_->hide();
+#ifdef RESHETO_WITH_NETWORK
+        if(index==tabs_->indexOf(networkPanel_)){networkPanel_->setStorage(storage_->text());tabs_->setTabText(index,QStringLiteral("Сеть"));}
+#endif
+        return;
+    }
     activeView_=index; auto &v=resultViews_[index]; table_=v.table; filter_=v.filter; search_=v.search; sort_=v.sort; direction_=v.direction; resetPage(); needRead_=true;
 }
 void MainWindow::selectJob(const QString &id) {
@@ -159,11 +240,15 @@ void MainWindow::selectJob(const QString &id) {
       jobs_->setCurrentIndex(index); }
     jobId_=id; knownResults_=-1; wantLatest_=false; selectionRead_=true; resetPage(); needRead_=true;
 }
-void MainWindow::resetPage(bool resetCursor) { ++generation_; if(resetCursor) { cursor_=0; upperRow_=0; } table_->setRowCount(0); visibleRows_.clear(); visibleEvents_.clear(); pageState_->clear(); details_->hide(); }
+void MainWindow::resetPage(bool resetCursor) { ++generation_; if(resetCursor) { cursor_=0; upperRow_=0; } table_->setRowCount(0); visibleRows_.clear(); visibleEvents_.clear(); pageState_->clear(); details_->hide();detailsToggle_->setEnabled(false); }
 void MainWindow::loadHistory() {
+#ifdef RESHETO_WITH_NETWORK
+    if(networkPanel_->busy())return;
+    networkPanel_->setStorage(storage_->text());
+#endif
     if(running_ || monitorActive_ || historyPath_==storage_->text()) return;
     historyPath_=storage_->text(); jobId_.clear(); manualJobId_.clear(); monitorJobId_.clear(); stoppedByHistoryError_=false; notifiedMatches_=0; notification_->clear(); notification_->hide();
-    historyError_.clear(); historyErrorLabel_->clear(); historyErrorLabel_->hide(); resetPage(); total_=0; wantLatest_=true; selectionRead_=true; needRead_=false; jobsDirty_=true; jobOffset_=0; { QSignalBlocker block(jobs_); jobs_->clear(); } summary_->setText(QStringLiteral("Чтение истории…"));
+    historyError_.clear(); historyErrorLabel_->clear(); historyErrorLabel_->hide(); resetPage(); total_=0; wantLatest_=true; selectionRead_=true; needRead_=false; jobsDirty_=true; jobOffset_=0; hasEarlierJobs_=false; { QSignalBlocker block(jobs_); jobs_->clear(); } summary_->setText(QStringLiteral("Чтение истории…"));
 }
 void MainWindow::start() {
     if(controller_.busy() || (!databaseReady_ && !heuristicReady_) || probe_.valid()) return;
@@ -199,7 +284,12 @@ void MainWindow::readPage() {
         ViewPage page; page.jobId=id; page.cursor=after; page.generation=generation; page.listOnly=listOnly; page.listed=readJobs;
         try {
             if(!QFileInfo::exists(storage) && (latest || id.isEmpty())) return page;
-            Store store(storage,true); if(readJobs) page.jobs=store.jobs(jobOffset,50);
+            Store store(storage,true);
+            if(readJobs) {
+                page.jobs=store.jobs(jobOffset,51);
+                page.hasEarlierJobs=page.jobs.size()>50;
+                if(page.hasEarlierJobs)page.jobs.pop_back();
+            }
             if(latest) { page.job=store.latest(); if(page.job) page.jobId=page.job->id; }
             else if(readJob && !id.isEmpty()) { page.job=store.getJob(id,!live); if(!page.job) throw Error(QStringLiteral("Задание отсутствует в истории: ")+id); }
             if(!page.jobId.isEmpty() && !listOnly) { auto result=store.query(page.jobId,query); page.rows=std::move(result.rows); page.cursor=after+static_cast<qint64>(page.rows.size()); page.total=result.total; page.upperRow=result.upperRow;
@@ -210,22 +300,31 @@ void MainWindow::readPage() {
 }
 void MainWindow::tick() {
     using namespace std::chrono_literals;
-    if(probe_.valid() && probe_.wait_for(0ms)==std::future_status::ready) { const auto status=probe_.get(); if(probePath_==db_->text() && probeHeuristicPath_==(heuristicEnabled_->isChecked()?heuristics_->text():QString())) { databaseReady_=status.signatures; heuristicReady_=status.heuristics; databaseState_->setText(status.message); } else probe(); }
+    if(probe_.valid() && probe_.wait_for(0ms)==std::future_status::ready) {
+        const auto status=probe_.get();
+        if(probePath_==db_->text() && probeHeuristicPath_==(heuristicEnabled_->isChecked()?heuristics_->text():QString())) {
+            databaseReady_=status.signatures;heuristicReady_=status.heuristics;databaseState_->setText(status.message);
+            const bool error=(!probePath_.isEmpty() && !databaseReady_) || (!probeHeuristicPath_.isEmpty() && !heuristicReady_);
+            settingsToggle_->setText(error?QStringLiteral("Параметры · ошибка загрузки"):QStringLiteral("Параметры проверки и наблюдения"));
+            settingsToggle_->setToolTip(status.message);
+        } else probe();
+    }
     if(view_.valid() && view_.wait_for(0ms)==std::future_status::ready) {
         auto page=view_.get();
         if(page.generation!=generation_) { needRead_=true; selectionRead_=true; jobsDirty_=true; if(jobId_.isEmpty()) wantLatest_=true; }
         else if(!page.error.isEmpty()) { if(historyError_.isEmpty()) historyError_=QStringLiteral("Ошибка чтения хранилища: ")+page.error; historyErrorLabel_->setText(historyError_); historyErrorLabel_->show(); if(running_ || monitorActive_) { stoppedByHistoryError_=true; controller_.cancel(); monitor_.cancel(); stop_->setEnabled(false); watchStop_->setEnabled(false); } }
         else {
-            if(page.listed) { QSignalBlocker block(jobs_); jobs_->clear(); for(const auto &j:page.jobs) { const auto label=QStringLiteral("%1 · %2 · %3 · %4").arg(j.started,j.source=="monitor"?QStringLiteral("Наблюдение"):QStringLiteral("Вручную"),stateText(j.state),j.path); jobs_->addItem(label,j.id); } if(!page.jobId.isEmpty() && jobs_->findData(page.jobId)<0) jobs_->addItem(QStringLiteral("Выбрано: ")+page.jobId,page.jobId); jobs_->setCurrentIndex(jobs_->findData(page.jobId)); earlier_->setEnabled(page.jobs.size()==50); }
-            if(page.job) { jobId_=page.jobId; showSummary(*page.job); knownResults_=page.job->results; if(page.job->source=="monitor" && activeView_==0 && page.rows.empty()) { tabs_->setCurrentIndex(1); needRead_=true; } }
+            if(page.listed) { QSignalBlocker block(jobs_); jobs_->clear(); for(const auto &j:page.jobs) { const auto label=QStringLiteral("%1 · %2 · %3 · %4").arg(j.started,j.source=="monitor"?QStringLiteral("Наблюдение"):QStringLiteral("Вручную"),stateText(j.state),j.path); jobs_->addItem(label,j.id); } if(!page.jobId.isEmpty() && jobs_->findData(page.jobId)<0) jobs_->addItem(QStringLiteral("Выбрано: ")+page.jobId,page.jobId); jobs_->setCurrentIndex(jobs_->findData(page.jobId)); hasEarlierJobs_=page.hasEarlierJobs; }
+            if(page.job) { jobId_=page.jobId; showSummary(*page.job); knownResults_=page.job->results; if(page.job->source=="monitor" && tabs_->currentIndex()==0 && page.rows.empty()) { tabs_->setCurrentIndex(1); needRead_=true; } }
             else if(page.jobId.isEmpty()) summary_->setText(QStringLiteral("Нет сохранённых заданий"));
             if(!page.listOnly && page.jobId==jobId_ && page.generation==generation_) {
                 cursor_=page.cursor; total_=page.total; upperRow_=page.upperRow; size_t eventIndex=0;
                 for(const auto &r:page.rows) { const int row=table_->rowCount(); table_->insertRow(row); visibleRows_.push_back(r); visibleEvents_.push_back(eventIndex<page.rowEvents.size()?page.rowEvents[eventIndex]:QJsonObject()); ++eventIndex;
                     const auto process=r.source=="behavioral"?r.details["process"].toObject():visibleEvents_.back()["details"].toObject()["process"].toObject();
                     const auto object=activeView_==2 && !process["pid"].toString().isEmpty()?QStringLiteral("PID %1 — %2").arg(process["pid"].toString(),r.path):r.path;
-                    const QStringList values{object,outcomeText(r),detectionName(r)}; for(int c=0;c<3;++c) { auto *item=new QTableWidgetItem(values[c]); item->setToolTip(c==0?r.path:c==2?r.basis:values[c]); table_->setItem(row,c,item); } }
-                pageState_->setText(QStringLiteral("На странице: %1; по запросу: %2; показано до %3").arg(table_->rowCount()).arg(total_).arg(cursor_));
+                    const QStringList values{object,outcomeText(r),shownDetectionName(r)}; for(int c=0;c<3;++c) { auto *item=new QTableWidgetItem(values[c]); item->setToolTip(c==0?r.path:c==2?r.basis:values[c]); table_->setItem(row,c,item); } }
+                const int rows=table_->rowCount();
+                pageState_->setText(QStringLiteral("Показано %1–%2 из %3").arg(rows?cursor_-rows+1:0).arg(rows?cursor_:0).arg(total_));
             }
         }
     }
@@ -242,6 +341,7 @@ void MainWindow::tick() {
     if(!view_.valid() && !selectedPending && (wantLatest_ || (historyError_.isEmpty() && (jobsDirty_ || (needRead_ && table_->rowCount()<200))))) readPage();
     setInputsEnabled(true); start_->setEnabled(!running_ && !probe_.valid() && (monitorActive_ || !view_.valid()) && (databaseReady_ || heuristicReady_)); watch_->setEnabled(!monitorActive_ && !probe_.valid() && (running_ || !view_.valid()) && (fileEnabled_->isChecked() || processEnabled_->isChecked()) && (databaseReady_ || heuristicReady_ || (processEnabled_->isChecked() && !behavior_->text().isEmpty())));
     next_->setEnabled(!view_.valid() && !jobId_.isEmpty() && cursor_<total_); first_->setEnabled(!view_.valid() && !jobId_.isEmpty()); currentManual_->setEnabled(!manualJobId_.isEmpty()); currentMonitor_->setEnabled(!monitorJobId_.isEmpty());
-    newer_->setEnabled(jobOffset_>0 && !view_.valid());
+    earlier_->setVisible(hasEarlierJobs_);earlier_->setEnabled(hasEarlierJobs_ && !jobsDirty_ && !view_.valid());
+    newer_->setVisible(jobOffset_>0);newer_->setEnabled(jobOffset_>0 && !jobsDirty_ && !view_.valid());
 }
 }
