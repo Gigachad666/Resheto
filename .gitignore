@@ -23,6 +23,7 @@
 !/docs/integration.md
 !/docs/signature_sources.md
 !/docs/testing.md
+!/ReadMeToo_Lab6.md
 
 # Генерируемые файлы при сборке внутри разрешённых каталогов.
 build/
