@@ -60,8 +60,8 @@ void putRow(QTableWidget *table,int row,const QStringList &values,const QString 
     }
 }
 }
-NetworkPanel::NetworkPanel(const QString &storage,const QString &rulesPath,QWidget *parent)
-    : QWidget(parent),storage_(storage),workerPath_(sibling("resheto-network-worker")),samplePath_(sibling("resheto-network-sample")) {
+NetworkPanel::NetworkPanel(const QString &storage,const QString &rulesPath,QWidget *parent,const QString &serviceEndpoint)
+    : QWidget(parent),serviceEndpoint_(serviceEndpoint),storage_(storage),workerPath_(sibling("resheto-network-worker")),samplePath_(sibling("resheto-network-sample")) {
     setObjectName("networkPanel");
     auto *body=new QVBoxLayout(this);
     body->setSpacing(4);
@@ -130,7 +130,7 @@ NetworkPanel::NetworkPanel(const QString &storage,const QString &rulesPath,QWidg
 
     connect(start_,&QPushButton::clicked,this,&NetworkPanel::start);
     connect(stop_,&QPushButton::clicked,this,[this]{
-        stopRequested_=true;session_.cancel();
+        stopCapture();
         if(!sampleJobId_.isEmpty())resetSample(QStringLiteral("Останавливаем локальный захват…"));
         updateControls();
     });
@@ -150,16 +150,17 @@ NetworkPanel::NetworkPanel(const QString &storage,const QString &rulesPath,QWidg
     });
     connect(pcapBrowse_,&QPushButton::clicked,this,[this]{const auto path=QFileDialog::getOpenFileName(this,QStringLiteral("Открыть PCAP"),{},QStringLiteral("PCAP (*.pcap);;Все файлы (*)"));if(!path.isEmpty())pcap_->setText(path);});
     connect(rulesBrowse_,&QPushButton::clicked,this,[this]{const auto path=QFileDialog::getOpenFileName(this,QStringLiteral("Сетевые правила"),{},QStringLiteral("JSON (*.json)"));if(!path.isEmpty())rules_->setText(path);});
-    connect(jobs_,&QComboBox::currentIndexChanged,this,[this](int index){if(index>=0){selectedId_=jobs_->itemData(index).toString();requestPage();}});
-    connect(current_,&QPushButton::clicked,this,[this]{if(!visible_.newestJobId.isEmpty()){selectedId_=visible_.newestJobId;jobOffset_=0;requestPage();updateControls();}});
+    connect(jobs_,&QComboBox::currentIndexChanged,this,[this](int index){if(index>=0){noticeFlow_.clear();noticeDetection_.clear();selectedId_=jobs_->itemData(index).toString();requestPage();}});
+    connect(current_,&QPushButton::clicked,this,[this]{if(!visible_.newestJobId.isEmpty()){noticeFlow_.clear();noticeDetection_.clear();selectedId_=visible_.newestJobId;jobOffset_=0;requestPage();updateControls();}});
     connect(older_,&QPushButton::clicked,this,[this]{jobOffset_+=50;requestPage(false);updateControls();});
     connect(newer_,&QPushButton::clicked,this,[this]{jobOffset_=0;requestPage(false);updateControls();});
-    connect(resultKind_,&QTabBar::currentChanged,this,[this]{table_->setRowCount(0);total_=0;pageLabel_->clear();selectRow();requestPage();updateControls();});
+    connect(resultKind_,&QTabBar::currentChanged,this,[this]{noticeFlow_.clear();noticeDetection_.clear();table_->setRowCount(0);total_=0;pageLabel_->clear();selectRow();requestPage();updateControls();});
     connect(filter_,&QComboBox::currentIndexChanged,this,[this]{requestPage();updateControls();});
     connect(sort_,&QComboBox::currentIndexChanged,this,[this]{requestPage();});
     connect(direction_,&QComboBox::currentIndexChanged,this,[this]{requestPage();});
     auto *searchDelay=new QTimer(this);searchDelay->setSingleShot(true);searchDelay->setInterval(220);
     connect(search_,&QLineEdit::textChanged,searchDelay,qOverload<>(&QTimer::start));connect(searchDelay,&QTimer::timeout,this,[this]{requestPage();});
+    connect(search_,&QLineEdit::textEdited,this,[this]{noticeFlow_.clear();noticeDetection_.clear();});
     connect(previousPage_,&QPushButton::clicked,this,[this]{offset_=qMax<qint64>(0,offset_-200);requestPage(false);});
     connect(nextPage_,&QPushButton::clicked,this,[this]{offset_+=200;requestPage(false);});
     connect(table_,&QTableWidget::itemSelectionChanged,this,&NetworkPanel::selectRow);
@@ -189,9 +190,38 @@ NetworkPanel::~NetworkPanel() {
     if(sampleProcess_.state()!=QProcess::NotRunning)sampleProcess_.kill();
 }
 void NetworkPanel::setStorage(const QString &path) {
+    if(!serviceEndpoint_.isEmpty())return;
     if(path==storage_ || busy())return;
     storage_=path;selectedId_.clear();latest_.reset();lastProgressId_.clear();jobOffset_=0;noticeShown_=0;emit detectionNotice(0);
     visible_=Page{};table_->setRowCount(0);notice_->hide();historyError_->hide();summary_->clear();setStateText({});
+    requestPage();
+}
+
+bool NetworkPanel::busy() const {
+#ifdef RESHETO_SERVICE_NETWORK
+    if(!serviceEndpoint_.isEmpty())return remoteStarting_ || remoteStatus_.busy;
+#endif
+    return session_.busy();
+}
+
+void NetworkPanel::stopCapture() {
+    stopRequested_=true;
+#ifdef RESHETO_SERVICE_NETWORK
+    if(!serviceEndpoint_.isEmpty()) {
+        if(remoteStatus_.job)remoteCancel_=remoteStatus_.job->id;
+        pollRemote();
+        return;
+    }
+#endif
+    session_.cancel();
+}
+
+void NetworkPanel::openDetection(const QString &jobId,const QString &flowId,const QString &detectionId) {
+    resultKind_->setCurrentIndex(1);
+    selectedId_=jobId;
+    noticeFlow_=flowId;
+    noticeDetection_=detectionId;
+    search_->clear();
     requestPage();
 }
 QString NetworkPanel::interfaceId() const {
@@ -225,6 +255,17 @@ void NetworkPanel::start() {
             request.analysis.capture.tcpPorts=tcpPorts();
         }
         request.rulesPath=rules_->text();request.storagePath=storage_;request.workerPath=workerPath_;
+#ifdef RESHETO_SERVICE_NETWORK
+        if(!serviceEndpoint_.isEmpty()) {
+            remoteStart_=request.analysis;
+            remoteStarting_=true;
+            stopRequested_=false;
+            setStateText(QStringLiteral("Запускается сетевой анализ…"));
+            pollRemote();
+            updateControls();
+            return;
+        }
+#endif
         if(!session_.submit(std::move(request)))return;
         wasBusy_=true;stopRequested_=false;notice_->hide();noticeShown_=0;emit detectionNotice(0);
         if(source==SampleSource) {
@@ -238,6 +279,13 @@ void NetworkPanel::start() {
 void NetworkPanel::refreshInterfaces() {
     if(interfaceProcess_.state()!=QProcess::NotRunning || busy())return;
     setStateText(QStringLiteral("Чтение списка интерфейсов…"));
+#ifdef RESHETO_SERVICE_NETWORK
+    if(!serviceEndpoint_.isEmpty()) {
+        remoteRefresh_=true;
+        pollRemote();updateControls();
+        return;
+    }
+#endif
     interfaceProcess_.start(workerPath_,{"--interfaces"});updateControls();
 }
 void NetworkPanel::readInterfaces(int exitCode) {
@@ -250,9 +298,13 @@ void NetworkPanel::readInterfaces(int exitCode) {
     if(object["format"]!="resheto-network-interfaces-v1" || !object["interfaces"].isArray()) {
         setStateText(QStringLiteral("Сетевой процесс вернул неверный список интерфейсов"));updateControls();return;
     }
+    showInterfaces(object["interfaces"].toArray());
+}
+
+void NetworkPanel::showInterfaces(const QJsonArray &rows) {
     const auto previous=interfaceId();
     interfaces_->clear();
-    for(const auto &value:object["interfaces"].toArray()) {
+    for(const auto &value:rows) {
         const auto item=value.toObject();const auto id=item["id"].toString();
         if(id.isEmpty())continue;
         const auto name=item["name"].toString();
@@ -283,7 +335,7 @@ void NetworkPanel::readSample() {
     const auto output=sampleProcess_.readAllStandardOutput();
     if(sampleClosing_)return;
     sampleOutput_+=output;
-    if(sampleOutput_.size()>8192){sampleFailed_=true;resetSample(QStringLiteral("Неверный ответ локального помощника"));if(!sampleJobId_.isEmpty())session_.cancel();return;}
+    if(sampleOutput_.size()>8192){sampleFailed_=true;resetSample(QStringLiteral("Неверный ответ локального помощника"));if(!sampleJobId_.isEmpty())stopCapture();return;}
     while(true) {
         const auto newline=sampleOutput_.indexOf('\n');
         if(newline<0)break;
@@ -307,7 +359,7 @@ void NetworkPanel::finishSample(int exitCode) {
     if(!sampleClosing_ && exitCode) {
         sampleFailed_=true;
         sampleState_->setText(diagnostic.isEmpty()?QStringLiteral("Локальный помощник завершился с ошибкой"):diagnostic);
-        if(!sampleJobId_.isEmpty())session_.cancel();
+        if(!sampleJobId_.isEmpty())stopCapture();
     }
     sampleClosing_=false;samplePorts_.clear();sampleOutput_.clear();
     updateControls();
@@ -334,6 +386,14 @@ void NetworkPanel::updateControls() {
     refresh_->setEnabled(idle && interfaceProcess_.state()==QProcess::NotRunning);
     start_->setText(sample?QStringLiteral("2. Начать захват"):interface?QStringLiteral("Начать захват"):QStringLiteral("Анализировать PCAP"));
     start_->setEnabled(idle && (!sample || samplePrepared()));stop_->setEnabled(active && !stopRequested_);
+#ifdef RESHETO_SERVICE_NETWORK
+    if(!serviceEndpoint_.isEmpty()) {
+        rules_->setEnabled(false);rulesBrowse_->setEnabled(false);
+        refresh_->setEnabled(refresh_->isEnabled() && remoteAvailable_ && !remoteRefresh_);
+        start_->setEnabled(start_->isEnabled() && remoteAvailable_ && remoteStatus_.error.isEmpty());
+        stop_->setEnabled(stop_->isEnabled() && remoteAvailable_ && !remoteStarting_);
+    }
+#endif
     const bool summaryShown=!active && latest_ && latest_->state!="running" && visible_.job && visible_.error.isEmpty() &&
         stateJobId_==latest_->id && visible_.job->id==stateJobId_ && !hasSpecificError(*latest_) &&
         visible_.job->state==latest_->state && visible_.job->finished==latest_->finished && visible_.job->error==latest_->error;
@@ -367,20 +427,22 @@ void NetworkPanel::requestPage(bool resetOffset) {
 }
 void NetworkPanel::loadPage() {
     if(pending_.valid() || !dirty_)return;
+#ifdef RESHETO_SERVICE_NETWORK
+    if(!serviceEndpoint_.isEmpty() && !remoteAvailable_)return;
+#endif
     const auto generation=generation_;
-    const auto id=selectedId_,storage=storage_,term=search_->text();
+    const auto id=selectedId_,storage=storage_,term=search_->text(),flowId=noticeFlow_;
     const auto jobOffset=jobOffset_,offset=offset_;
     const bool detections=resultKind_->currentIndex()==1;
     const NetworkQuery query{term,filter_->currentIndex()==1,direction_->currentIndex()==1,static_cast<NetworkSort>(sort_->currentIndex()),offset,200};
     const auto active=busy()?latest_:std::optional<NetworkJob>{};
     const auto noticeJob=latest_ && latest_->storedDetections>noticeShown_?latest_:std::optional<NetworkJob>{};
     dirty_=false;
-    pending_=std::async(std::launch::async,[generation,id,storage,term,jobOffset,offset,detections,query,active,noticeJob]{
+    pending_=std::async(std::launch::async,[generation,id,storage,term,flowId,jobOffset,offset,detections,query,active,noticeJob,endpoint=serviceEndpoint_]{
         Page page;page.generation=generation;page.id=id;page.detectionView=detections;
         try {
-            if(storage.isEmpty() || !QFileInfo::exists(storage))return page;
-            NetworkStore store(storage,true);
-            if(noticeJob) {
+            const auto read=[&](auto &store) {
+            if(noticeJob && endpoint.isEmpty()) {
                 const auto alerts=store.detections(noticeJob->id,{},{},noticeJob->storedDetections-1,1);
                 if(!alerts.rows.empty()) {
                     const auto &last=alerts.rows.front();page.noticeJobId=noticeJob->id;page.noticeCount=noticeJob->storedDetections;
@@ -395,18 +457,33 @@ void NetworkPanel::loadPage() {
                 if(!newest.empty())page.newestJobId=newest.front().id;
             } else if(!page.jobs.empty())page.newestJobId=page.jobs.front().id;
             if(page.id.isEmpty() && !page.jobs.empty())page.id=page.jobs.front().id;
-            if(page.id.isEmpty())return page;
+            if(page.id.isEmpty())return;
             page.job=active && active->id==page.id?active:store.getJob(page.id);
-            if(!page.job)return page;
+            if(!page.job)return;
             page.diagnostics=store.diagnostics(page.id);
             if(detections) {
-                page.detections=store.detections(page.id,{},term,offset);
+                if constexpr(std::is_same_v<std::remove_reference_t<decltype(store)>,NetworkStore>) {
+                page.detections=store.detections(page.id,flowId,term,offset);
                 for(const auto &d:page.detections.rows) {
                     const auto flow=store.flow(page.id,d.flowId);
                     if(!flow)throw Error(QStringLiteral("В истории отсутствует поток обнаружения"));
                     page.linkedFlows.push_back(*flow);
                 }
+#ifdef RESHETO_SERVICE_NETWORK
+                } else page.detections=store.detections(page.id,flowId,term,offset,200,&page.linkedFlows);
+#else
+                }
+#endif
             } else page.flows=store.flows(page.id,query);
+            };
+#ifdef RESHETO_SERVICE_NETWORK
+            if(!endpoint.isEmpty()) {
+                service::NetworkClient client(endpoint);read(client);
+                return page;
+            }
+#endif
+            if(storage.isEmpty() || !QFileInfo::exists(storage))return page;
+            NetworkStore store(storage,true);read(store);
         }catch(const Error &error){page.error=error.message;}
         return page;
     });
@@ -467,7 +544,8 @@ void NetworkPanel::showPage(Page page) {
                 const auto &item=v.flows.rows[row];const auto &f=item.flow;
                 putRow(table_,row,{flowText(f),packetTime(f.firstUs),QStringLiteral("%1 / %2").arg(f.packetsAToB+f.packetsBToA).arg(static_cast<quint64>(f.bytesAToB)+static_cast<quint64>(f.bytesBToA))},f.id);
             }
-            if(sameSelection && table_->item(row,0)->data(Qt::UserRole).toString()==oldId)table_->setCurrentCell(row,0);
+            const auto targetId=noticeDetection_.isEmpty()?(sameSelection?oldId:QString()):noticeDetection_;
+            if(table_->item(row,0)->data(Qt::UserRole).toString()==targetId)table_->setCurrentCell(row,0);
         }
     }
     pageLabel_->setText(QStringLiteral("Показано %1–%2 из %3").arg(count?offset_+1:0).arg(count?offset_+count:0).arg(total_));
@@ -490,16 +568,72 @@ void NetworkPanel::selectRow() {
 void NetworkPanel::loadDetail() {
     if(detail_.valid() || selectedFlowId_.isEmpty())return;
     const auto id=visible_.id,flow=selectedFlowId_,storage=storage_;
-    detail_=std::async(std::launch::async,[id,flow,storage]{
+    detail_=std::async(std::launch::async,[id,flow,storage,endpoint=serviceEndpoint_]{
         Detail detail;detail.jobId=id;detail.flowId=flow;
-        try{NetworkStore store(storage,true);detail.detections=store.detections(id,flow);}catch(const Error &error){detail.error=error.message;}
+        try {
+#ifdef RESHETO_SERVICE_NETWORK
+            if(!endpoint.isEmpty())detail.detections=service::NetworkClient(endpoint).detections(id,flow);
+            else
+#endif
+            {NetworkStore store(storage,true);detail.detections=store.detections(id,flow);}
+        }catch(const Error &error){detail.error=error.message;}
         return detail;
     });
 }
+#ifdef RESHETO_SERVICE_NETWORK
+void NetworkPanel::pollRemote() {
+    using namespace std::chrono;
+    if(remoteReply_.valid()) {
+        if(remoteReply_.wait_for(milliseconds(0))!=std::future_status::ready)return;
+        auto reply=remoteReply_.get();
+        remoteStarting_=remoteStart_.has_value();
+        if(reply.started) {
+            notice_->hide();noticeShown_=0;
+            emit detectionNotice(0);
+            if(source_->currentIndex()==SampleSource)sampleJobId_=reply.started->id;
+            dirty_=true;
+        }
+        if(reply.status) {
+            if(!remoteAvailable_)dirty_=true;
+            remoteAvailable_=true;
+            remoteStatus_=std::move(*reply.status);
+            rules_->setText(remoteStatus_.rulesPath);
+            if(!remoteStatus_.error.isEmpty())setStateText(remoteStatus_.error);
+        } else remoteAvailable_=false;
+        if(reply.interfaces)showInterfaces(*reply.interfaces);
+        if(!reply.error.isEmpty()) {
+            stopRequested_=false;
+            setStateText(reply.error);
+        }
+    }
+    const auto now=steady_clock::now();
+    if(!remoteStart_ && remoteCancel_.isEmpty() && !remoteRefresh_ && now<nextRemotePoll_)return;
+    nextRemotePoll_=now+milliseconds(remoteAvailable_?450:1000);
+    remoteReply_=std::async(std::launch::async,[endpoint=serviceEndpoint_,start=std::exchange(remoteStart_,std::nullopt),
+                                             stop=std::exchange(remoteCancel_,QString()),interfaces=std::exchange(remoteRefresh_,false)]{
+        RemoteReply reply;
+        try {
+            const service::NetworkClient client(endpoint);
+            try {
+                if(start)reply.started=client.start(*start);
+                if(!stop.isEmpty() && !client.cancel(stop))throw Error(QStringLiteral("Сетевое задание уже завершилось"));
+                if(interfaces)reply.interfaces=client.interfaces();
+            } catch(const Error &error) {reply.error=error.message;}
+            reply.status=client.status();
+        } catch(const Error &error) {if(reply.error.isEmpty())reply.error=error.message;}
+        return reply;
+    });
+}
+#endif
+
 void NetworkPanel::tick() {
     using namespace std::chrono_literals;
+    auto progress=session_.progress();
+#ifdef RESHETO_SERVICE_NETWORK
+    if(!serviceEndpoint_.isEmpty()) {pollRemote();progress=remoteStatus_.job;}
+#endif
     const bool active=busy();
-    if(const auto job=session_.progress();job && (active || wasBusy_ || job->id==lastProgressId_)) {
+    if(const auto &job=progress;job && (active || wasBusy_ || job->id==lastProgressId_)) {
         const bool fresh=!latest_ || latest_->id!=job->id;
         const bool changed=fresh || latest_->state!=job->state || latest_->counters.packets!=job->counters.packets || latest_->storedDetections!=job->storedDetections || latest_->storedFlows!=job->storedFlows;
         if(job->storedDetections>(fresh?0:latest_->storedDetections)) {
@@ -511,7 +645,7 @@ void NetworkPanel::tick() {
         latest_=job;lastProgressId_=job->id;
         if(active || wasBusy_ || changed)
             setStateText(stopRequested_ && active?QStringLiteral("Остановка запрошена…"):networkStateText(*job)+" · "+countersText(*job)+(hasSpecificError(*job)?"\n"+job->error:QString()),job->id);
-        if(ready && selectedId_.isEmpty() && QFileInfo::exists(storage_)){selectedId_=job->id;requestPage();}
+        if(ready && selectedId_.isEmpty() && (!serviceEndpoint_.isEmpty() || QFileInfo::exists(storage_))){selectedId_=job->id;requestPage();}
         else if(ready && selectedId_==job->id && changed)dirty_=true;
     }
     if(wasBusy_!=active) {

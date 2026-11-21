@@ -2,6 +2,10 @@
 #include "core/controller.h"
 #include "core/database.h"
 #include "core/monitor.h"
+#ifdef RESHETO_WITH_SERVICE
+#include "service/client.h"
+#endif
+#include <chrono>
 #include <QMainWindow>
 #include <future>
 class QLineEdit;
@@ -18,6 +22,9 @@ class GuiTests;
 namespace resheto {
 #ifdef RESHETO_WITH_NETWORK
 class NetworkPanel;
+#endif
+#ifdef RESHETO_WITH_SERVICE
+class ReactionPanel;
 #endif
 struct ViewPage {
     QString jobId,error;
@@ -86,17 +93,68 @@ class MainWindow : public QMainWindow {
     QString historyError_;
     bool stoppedByHistoryError_=false;
     bool databaseReady_=false, heuristicReady_=false, running_=false, monitorActive_=false, needRead_=false, wantLatest_=true;
+    const QString serviceEndpoint_;
+#ifdef RESHETO_WITH_SERVICE
+    struct ServiceCommand {
+        QString path, cancelId;
+        bool recursive=false;
+        std::optional<service::MonitorOptions> monitor;
+        bool monitorStop=false;
+    };
+    struct ServiceReply {
+        std::optional<service::Status> status;
+        std::optional<Job> started;
+        std::optional<MonitorStatus> monitorStarted;
+        std::optional<std::vector<ProcessInfo>> processes;
+        QString processesError;
+        QString connectionError, commandError;
+    };
+    std::optional<ServiceCommand> serviceCommand_;
+    std::future<ServiceReply> serviceReply_;
+    std::chrono::steady_clock::time_point nextServicePoll_;
+    QLabel *serviceError_=nullptr;
+    QLabel *serviceDiagnostics_=nullptr;
+    QPushButton *quarantineResult_=nullptr;
+    QPushButton *terminateProcess_=nullptr;
+    ReactionPanel *notificationPanel_=nullptr,*quarantinePanel_=nullptr,*journalPanel_=nullptr;
+    qint64 serviceUnread_=-1;
+    bool serviceReady_=false, serviceCommandRunning_=false;
+    bool serviceBusy_=false, serviceJobPending_=false;
+    bool serviceScanAvailable_=false,serviceReactionBusy_=false,serviceQuarantineAvailable_=false;
+    bool serviceMonitorAvailable_=false,serviceMonitorStopRequested_=false;
+    MonitorStatus serviceMonitor_;
+    std::vector<ProcessInfo> serviceProcesses_;
+    QString serviceProcessesError_;
+    struct ProcessActionReply {
+        QString jobId,key,error;
+        QJsonObject result;
+        bool confirmed=false;
+    };
+    std::future<ProcessActionReply> processAction_;
+    bool confirmingProcess_=false;
+    void pollService();
+    void updateQuarantineAction();
+    const Result *selectedProcessDetection() const;
+    void requestProcessAction(const QString &jobId,const QString &key,bool confirmed);
+    void pollProcessAction();
+#endif
     qint64 notifiedMatches_=0;
     int processTick_=0;
     qint64 cursor_=0, knownResults_=-1;
     void probe();
     void tick();
     void start();
+    void stopManual();
+    void selectManualJob(const QString &id);
+    void updateManualProgress(const Job &job,bool busy);
     void loadHistory();
     void resetPage(bool resetCursor=true);
     void readPage();
     void showSummary(const Job &job);
     void startMonitor();
+    void stopMonitor();
+    void selectMonitorJob(const QString &id,bool files);
+    void updateMonitorProgress(const MonitorStatus &status);
     void showProcesses();
     void showDetails();
     void setInputsEnabled(bool enabled);
@@ -104,7 +162,7 @@ class MainWindow : public QMainWindow {
     void selectView(int index);
     void notify(const Job &job,qint64 &known,const QString &source);
 public:
-    explicit MainWindow(const Request &defaults,const QString &behaviorPath={},const QString &processScope={},const QString &watchPath={},const QString &networkRulesPath={});
+    explicit MainWindow(const Request &defaults,const QString &behaviorPath={},const QString &processScope={},const QString &watchPath={},const QString &networkRulesPath={},const QString &serviceEndpoint={});
     ~MainWindow() override;
 };
 }

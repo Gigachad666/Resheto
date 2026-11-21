@@ -11,7 +11,7 @@ int main(int argc,char **argv) {
     resheto::addGuiOptions(parser,QDir(QCoreApplication::applicationDirPath()),QDir::current());
     parser.process(app);
     const auto startup=resheto::guiStartup(parser,QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)));
-    resheto::MainWindow window(startup.request,startup.behaviorPath,startup.processScope,startup.watchPath,startup.networkRules);
+    resheto::MainWindow window(startup.request,startup.behaviorPath,startup.processScope,startup.watchPath,startup.networkRules,startup.serviceEndpoint);
     window.show();
     return app.exec();
 }

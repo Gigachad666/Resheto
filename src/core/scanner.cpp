@@ -59,7 +59,7 @@ Result scanFile(const QString &path,const Request &request) {
             QByteArray block=file.read(request.blockSize);
             if(block.isEmpty()) break;
             if(consumed>r.size-block.size()) return fail("changed",QStringLiteral("Размер файла изменился во время чтения"));
-            if(signatureReady) hash.addData(block);
+            if(signatureReady || request.recordDetectionDigest)hash.addData(block);
             const qint64 base=consumed-tail.size();
             QByteArray window=tail+block;
             if(request.hooks.afterBlock) request.hooks.afterBlock(path,consumed+block.size());
@@ -70,7 +70,7 @@ Result scanFile(const QString &path,const Request &request) {
         }
         if(cancelled()) return fail("cancelled",QStringLiteral("Проверка отменена"));
         if(consumed!=r.size || !file.unchanged()) return fail("changed",QStringLiteral("Файл изменён, исчез или путь подменён во время проверки"));
-        const auto digest=signatureReady?hash.result():QByteArray();
+        const auto digest=signatureReady || request.recordDetectionDigest ? hash.result() : QByteArray();
         if(!found && signatureReady) {
             found=request.snapshot->index->digest(*request.snapshot,digest,r.size);
         }
@@ -108,6 +108,7 @@ Result scanFile(const QString &path,const Request &request) {
             r.completeness="partial"; r.code="analyzer_unavailable";
             r.reason=QStringList{request.signatureError,request.heuristicError}.filter(QRegularExpression(".+")).join("; ");
         }
+        if(request.recordDetectionDigest && isDetection(r))r.sha256=QString::fromLatin1(digest.toHex());
         r.time=now(); return r;
     } catch(const Error &e) { return fail("file_io",e.message); }
 }
@@ -162,7 +163,16 @@ Job runJob(Request req,Progress progress) {
         for(const auto &p:servicePaths) {
             for(const auto &suffix:{QString(),QString("-wal"),QString("-shm"),QString("-journal"),QString(".sha256")}) excluded.push_back(p+suffix);
         }
+        const auto quarantinePath=req.recordDetectionDigest?absolute(req.storagePath)+".quarantine":QString();
+        if(!quarantinePath.isEmpty())excluded.push_back(absolute(req.storagePath)+".service.lock");
         auto isExcluded=[&](const QString &p) {
+            if(!quarantinePath.isEmpty()) {
+#ifdef _WIN32
+                if(p.compare(quarantinePath,Qt::CaseInsensitive)==0 || p.startsWith(quarantinePath+"/",Qt::CaseInsensitive))return true;
+#else
+                if(p==quarantinePath || p.startsWith(quarantinePath+"/"))return true;
+#endif
+            }
             for(const auto &e:excluded) {
 #ifdef _WIN32
                 if(p.compare(e,Qt::CaseInsensitive)==0) return true;

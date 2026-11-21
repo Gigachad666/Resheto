@@ -1,5 +1,144 @@
 # Подключение модулей Решета
 
+## Запуск комплекса через службу
+
+Процесс `resheto-service` управляет ручной проверкой, файловым и процессным наблюдением, сетевыми заданиями, историей SQLite и карантином. GUI подключается по локальному каналу от той же учётной записи. Сетевой захват выполняет отдельный `resheto-network-worker`.
+
+Для работы комплекса и показа достаточно запустить `resheto-service` из обычного терминала по команде ниже. Регистрация в Windows нужна для управления через диспетчер служб, например для автоматического запуска вместе с Windows.
+
+Цель `resheto-service` собирается по умолчанию вместе с GUI и использует Qt Network. Опция `-DRESHETO_BUILD_SERVICE=OFF` отключает эту цель и параметр GUI `--service`.
+
+Команды ниже используют `build/windows/Release` из [инструкции по сборке](../README.md#сборка-и-тесты). Если вы собрали проект в другой каталог или получили готовый комплект, укажите в обоих PowerShell путь к папке с `resheto-service.exe` и `resheto.exe`. Для сборки без упакованных DLL добавьте Qt в `PATH` в обоих терминалах, как в README.
+
+В первом PowerShell из корня проекта запустите службу с отдельной историей.
+
+```powershell
+$bin = './build/windows/Release'
+if (!(Test-Path -LiteralPath "$bin/resheto-service.exe" -PathType Leaf)) {
+    throw "В $bin нет resheto-service.exe. Укажите в переменной bin каталог сборки со службой."
+}
+& "$bin/resheto-service.exe" --endpoint resheto-demo --db distribution/working/current.json --heuristics data/heuristic_rules.json --network-rules data/network_rules.json --storage build/service-demo/history.db
+```
+
+После строки `READY resheto-demo` оставьте первый терминал открытым. Во втором укажите тот же каталог и запустите GUI.
+
+```powershell
+$bin = './build/windows/Release'
+& "$bin/resheto.exe" --service resheto-demo
+```
+
+После закрытия окна служба продолжает задания. Новый GUI с тем же именем подключения покажет прогресс и историю. Ручная проверка, наблюдение и сеть имеют отдельные кнопки остановки. В «Параметрах проверки и наблюдения» задаются каталог файлов, область образов процессов и поведенческие правила. При переподключении окно показывает фактические параметры активного наблюдения. Можно задать начальные значения через `--watch-path`, `--process-scope` и `--behavior`. На Linux пути в типовой сборке начинаются с `./build/release/`, имена исполняемых файлов без `.exe`.
+
+В «Уведомлениях» видны источник, объект, время и основание. «К результату» открывает соответствующую вкладку и задание. Для сети открывается обнаружение на связанном потоке. «Журнал» включает начало и завершение заданий, срабатывания, ошибки и действия карантина. Файловые и сетевые результаты используют свои таблицы в одном SQLite-файле.
+
+### Настройки и диагностика
+
+Службу можно запустить с `--config <файл.json>`. Например, для `build/service-demo/service.json` содержимое будет таким.
+
+```json
+{
+  "endpoint": "resheto-demo",
+  "db": "../../distribution/working/current.json",
+  "heuristics": "../../data/heuristic_rules.json",
+  "network_rules": "../../data/network_rules.json",
+  "storage": "history.db"
+}
+```
+
+Относительные пути считаются от каталога JSON. Параметры командной строки имеют приоритет. После изменения настроек перезапустите службу. Если недоступна одна из баз правил, окно показывает причину, а проверка может работать с доступным анализатором. При недоступной истории служба сообщает причину по локальному каналу и записывает ошибку в stderr и системный журнал (Windows Application или Linux syslog). Новая проверка в этом состоянии недоступна, поскольку её результаты нельзя сохранить.
+
+### Запуск под управлением ОС
+
+**Windows.** SCM (Service Control Manager) — диспетчер служб Windows. Для работы через SCM Решето запускается с флагом `--scm`. Подготовьте каталог с `resheto-service.exe`, `service.json`, библиотеками и плагинами Qt, включая `sqldrivers/qsqlite.dll`. Библиотеки и плагины можно собрать рядом с программой через `windeployqt`.
+
+В PowerShell, из которого будете запускать GUI, выполните `whoami`. Для этой учётной записи откройте `secpol.msc` от имени администратора и проверьте право «Вход в качестве службы» в разделе «Локальные политики → Назначение прав пользователя». Если записи там нет, добавьте имя из `whoami`. [Право входа в качестве службы](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/log-on-as-a-service)
+
+Для первой регистрации выполните блок в PowerShell от имени администратора. Введите путь к подготовленному каталогу, а затем полное имя из `whoami` и пароль учётной записи Windows. [Пароль учётной записи и PIN](https://support.microsoft.com/en-us/windows/security/change-or-reset-your-pin-in-windows)
+
+```powershell
+& {
+    $bin = (Read-Host 'Папка с resheto-service.exe и service.json').Trim().Trim('"')
+    if (!$bin) { return }
+    $exe = (Resolve-Path -LiteralPath (Join-Path $bin 'resheto-service.exe') -ErrorAction Stop).Path
+    $config = (Resolve-Path -LiteralPath (Join-Path $bin 'service.json') -ErrorAction Stop).Path
+    $account = Get-Credential -Message 'Введите имя из whoami и пароль этой учётной записи Windows'
+    if (!$account) { return }
+    New-Service -Name Resheto -DisplayName 'АС Решето' -BinaryPathName ('"{0}" --scm --config "{1}"' -f $exe,$config) -Credential $account -StartupType Manual -ErrorAction Stop
+    Start-Service Resheto -ErrorAction Stop
+    Get-Service Resheto
+}
+```
+
+Когда `Get-Service Resheto` покажет `Running`, подключите GUI к `endpoint` из JSON и выполните контрольную проверку. Закройте и снова откройте GUI во время наблюдения. Затем остановите службу через `Stop-Service`, повторно запустите через `Start-Service` и проверьте чтение прежней истории. Для автоматического старта используйте `Set-Service Resheto -StartupType Automatic`. Область наблюдения и захват задаются через GUI.
+
+Если служба уже зарегистрирована и не запускается, `sc.exe qc Resheto` покажет путь и учётную запись. Причину отказа SCM можно посмотреть в журнале Windows «Система» по источнику `Service Control Manager`. При событии 7041 проверьте, что учётной записи разрешён «Вход в качестве службы». Если запись уже добавлена, проверьте политику «Запретить вход в качестве службы» для этой записи и её групп. Запрет имеет приоритет. Ошибки самого Решета записываются в журнал «Приложение». [Право входа в качестве службы](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/log-on-as-a-service)
+
+**Linux.** Для запуска в рамках учётной записи сохраните пример как `~/.config/systemd/user/resheto.service` и подставьте пути к своей сборке и JSON. [Руководство systemd.unit](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html) · [Руководство systemd.service](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)
+
+```ini
+[Unit]
+Description=AS Resheto
+
+[Service]
+Type=exec
+WorkingDirectory=%h/Resheto
+ExecStart=%h/Resheto/build/release/resheto-service --config %h/Resheto/build/service-demo/service.json
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user start resheto
+systemctl --user status resheto
+journalctl --user -u resheto -b
+# Для остановки
+systemctl --user stop resheto
+```
+
+В обоих случаях GUI подключается к `endpoint` из JSON. Права живого захвата проверяются отдельно для сетевого процесса. Для показа достаточно запустить службу из терминала по команде выше.
+
+### Показ реагирования
+
+В первом PowerShell укажите каталог своей сборки в `$bin`, подготовьте собственный тестовый набор и запустите службу. Для повтора выберите новое значение `$demo`.
+
+```powershell
+$bin='./build/windows/Release'
+$demo='build/reaction-demo-new'
+& "$bin/resheto-prepare.exe" --source data/demo_signatures.json --output $demo
+if ($LASTEXITCODE -ne 0) { throw 'Подготовка не удалась' }
+& "$bin/resheto-network-prepare.exe" --output "$demo/network" --rules data/network_rules.json
+if ($LASTEXITCODE -ne 0) { throw 'Подготовка PCAP не удалась' }
+& "$bin/resheto-service.exe" --endpoint resheto-reaction --db "$demo/signatures.db" --network-rules data/network_rules.json --storage "$demo/history.db"
+```
+
+Во втором PowerShell укажите те же `$bin` и `$demo`, откройте окно и нажмите «Проверить».
+
+```powershell
+$bin = './build/windows/Release'
+$demo = 'build/reaction-demo-new'
+& "$bin/resheto.exe" --service resheto-reaction --path "$demo/fixtures/exact.bin"
+```
+
+1. В «Уведомлениях» откройте обнаружение `exact.bin`. Проверьте время, путь и основание, затем нажмите «К результату».
+2. Выберите строку и нажмите «В карантин…». При ответе «Нет» файл остаётся на месте. При ответе «Да» строка карантина показывает состояние и SHA-256. Отметку о просмотре уведомления можно сохранить отдельно.
+3. Нажмите «Восстановить». Для проверки конфликта предварительно создайте на старом месте другой безвредный файл. Служба сохранит его, а «Восстановить как…» позволит задать свободный путь. После восстановления можно отдельно удалить упаковку из карантина.
+4. Откройте «Журнал» и найдите обнаружение, подтверждённое действие и отказ при конфликте. Закрытие и повторное открытие окна сохраняет доступ к этим записям.
+
+Карантин принимает подтверждённые файловые обнаружения с SHA-256. Для старых результатов без SHA-256 повторите проверку через службу. Служба сверяет путь, идентификатор и содержимое файла, затем сохраняет и проверяет упаковку в каталоге `history.db.quarantine`. После прерванной операции видны её состояние и промежуточные пути. Восстановление проверяет содержимое и создаёт файл по свободному пути. Карантин рассчитан на обычные файлы размером до 256 МиБ, восстанавливает содержимое и устанавливает права текущей учётной записи. Владельца, исходные права, отметки времени и расширенные атрибуты он не переносит.
+
+### Завершение процесса
+
+Во вкладке «Процессы» выберите сохранённое поведенческое обнаружение или обнаружение при проверке исполняемого файла процесса. Нажмите «Завершить процесс…». Для живого процесса, с запуска которого прошло не менее пяти секунд, появится подтверждение с PID, путём образа и основанием. Служба повторно сверяет идентификатор запуска, путь и владельца, затем действует через дескриптор конкретного процесса. В журнале видны команда и результат. Операция относится к одному процессу. Если требуется изолировать его исполняемый файл, используйте отдельное действие карантина по файловому обнаружению.
+
+Для безопасного показа запустите наблюдение за каталогом с собственным `resheto-safe-helper` и запустите помощник с `--children 3 --delay-ms 1000 --hold-ms 10000`. В «Процессах» выберите обнаружение родителя. Проверьте отказ до пяти секунд, затем подтверждение и результат в журнале. Windows использует дескриптор процесса, Linux требует поддержки pidfd. [Microsoft TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess) · [Linux pidfd](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html)
+
+Для показа наблюдения создайте пустой каталог внутри `$demo`, выберите его в параметрах и запустите файловое наблюдение. Затем скопируйте туда собственный `fixtures/masked.bin`. Обнаружение появится в той же вкладке «Уведомления» и откроет файловое наблюдение. Во вкладке «Сеть» проанализируйте `network/control.pcap`. Из сетевого уведомления откройте соответствующий поток. Остановите наблюдение отдельной кнопкой после показа.
+
+## Файловый API
+
 `Resheto::Core` объединяет сигнатурный анализ, статическую эвристику и наблюдение через `MonitorRuntime`. Пример `examples/consumer` использует сигнатурный анализ, а `examples/lab4_consumer` также вызывает эвристику и наблюдение.
 
 Публичная цель — `Resheto::Core` (реализация `resheto_core`), заголовок `<core/api.h>`. C++20, Qt 6.2–6.x Core/Sql, Threads и QSQLITE. Совместимость исходного API — в пределах этой версии; произвольный бинарный ABI между компиляторами не обещается. Установочный CMake package пока не предоставляется: используется `add_subdirectory`.

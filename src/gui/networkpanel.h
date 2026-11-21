@@ -1,7 +1,11 @@
 #pragma once
 #include "network/session.h"
+#ifdef RESHETO_SERVICE_NETWORK
+#include "service/network_client.h"
+#endif
 #include <QProcess>
 #include <QWidget>
+#include <chrono>
 #include <future>
 
 class QComboBox;
@@ -35,10 +39,27 @@ class NetworkPanel : public QWidget {
         network::NetworkDetectionPage detections;
     };
     network::NetworkSession session_;
+    const QString serviceEndpoint_;
+#ifdef RESHETO_SERVICE_NETWORK
+    struct RemoteReply {
+        std::optional<service::NetworkStatus> status;
+        std::optional<network::NetworkJob> started;
+        std::optional<QJsonArray> interfaces;
+        QString error;
+    };
+    std::optional<network::AnalysisOptions> remoteStart_;
+    std::future<RemoteReply> remoteReply_;
+    service::NetworkStatus remoteStatus_;
+    std::chrono::steady_clock::time_point nextRemotePoll_;
+    QString remoteCancel_;
+    bool remoteAvailable_=false,remoteRefresh_=false,remoteStarting_=false;
+    void pollRemote();
+#endif
     QProcess interfaceProcess_,sampleProcess_;
     QByteArray sampleOutput_;
     QString storage_,selectedId_,workerPath_,samplePath_,lastProgressId_;
     QString selectedFlowId_,copiedBasis_,sampleJobId_,stateJobId_;
+    QString noticeFlow_,noticeDetection_;
     std::vector<quint16> samplePorts_;
     std::optional<network::NetworkJob> latest_;
     std::future<Page> pending_;
@@ -64,8 +85,10 @@ class NetworkPanel : public QWidget {
     void updateControls();
     void setStateText(const QString &text,const QString &jobId={});
     void start();
+    void stopCapture();
     void refreshInterfaces();
     void readInterfaces(int exitCode);
+    void showInterfaces(const QJsonArray &rows);
     void prepareSample();
     void readSample();
     void finishSample(int exitCode);
@@ -80,11 +103,12 @@ class NetworkPanel : public QWidget {
     QString interfaceId() const;
     std::vector<quint16> tcpPorts() const;
 public:
-    explicit NetworkPanel(const QString &storage,const QString &rulesPath,QWidget *parent=nullptr);
+    explicit NetworkPanel(const QString &storage,const QString &rulesPath,QWidget *parent=nullptr,const QString &serviceEndpoint={});
     ~NetworkPanel() override;
     void setStorage(const QString &path);
-    bool busy() const { return session_.busy(); }
+    bool busy() const;
     void cancel() { session_.cancel(); }
+    void openDetection(const QString &jobId,const QString &flowId,const QString &detectionId);
 signals:
     void activeChanged();
     void detectionNotice(qint64 count);

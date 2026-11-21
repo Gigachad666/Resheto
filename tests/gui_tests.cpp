@@ -3,7 +3,12 @@
 #include "core/database.h"
 #include "core/signatures.h"
 #include "fixtures.h"
+#ifdef RESHETO_SERVICE_NETWORK
+#include "service/network_client.h"
+#include "network/fixtures.h"
+#endif
 #include <QCheckBox>
+#include <QCryptographicHash>
 #include <QPlainTextEdit>
 #include <QElapsedTimer>
 #include <QDateTime>
@@ -18,13 +23,16 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QScopeGuard>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QProcess>
+#include <QUuid>
 #include <QtTest>
 #include <future>
 using namespace resheto;
@@ -38,6 +46,370 @@ private slots:
         QVERIFY(font>=0); QApplication::setFont(QFont(QFontDatabase::applicationFontFamilies(font).front(),10));
 #endif
     }
+#ifdef RESHETO_WITH_SERVICE
+    void serviceProcessActionAsksAndHonorsConfirmation() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const auto area=temp.filePath("programs");
+        QVERIFY(QDir().mkdir(area));
+        const QFileInfo source(QStringLiteral(RESHETO_HELPER_PATH));
+        const auto helper=area+"/"+source.fileName();
+        QVERIFY(QFile::copy(source.absoluteFilePath(),helper));
+        QFile binary(helper);
+        QVERIFY(binary.open(QIODevice::ReadOnly));
+        const auto digest=QString::fromLatin1(QCryptographicHash::hash(binary.readAll(),QCryptographicHash::Sha256).toHex());
+        binary.close();
+        const auto config=temp.filePath("rules.json"),db=temp.filePath("signatures.db");
+        const QJsonArray signatures{QJsonObject{{"id","own-image"},{"name","Own helper"},{"kind","HASH"},{"algorithm","SHA-256"},
+                                                {"enabled",1},{"value",digest},{"version","1"}}};
+        {
+            QFile file(config);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            const auto document=QJsonDocument(QJsonObject{{"version","gui-process-action"},{"signatures",signatures}}).toJson();
+            QCOMPARE(file.write(document),document.size());
+        }
+        createSignatures(config,db);
+        const auto endpoint="resheto-gui-process-"+QUuid::createUuid().toString(QUuid::WithoutBraces);
+        auto executable=QCoreApplication::applicationDirPath()+"/resheto-service";
+#ifdef Q_OS_WIN
+        executable+=".exe";
+#endif
+        QProcess serviceProcess;
+        serviceProcess.start(executable,{"--endpoint",endpoint,"--db",db,"--storage",temp.filePath("history.db")});
+        const auto cleanup=qScopeGuard([&]{
+            if(serviceProcess.state()!=QProcess::NotRunning){serviceProcess.kill();serviceProcess.waitForFinished(3000);}
+        });
+        QVERIFY(serviceProcess.waitForStarted(3000));
+        MainWindow window({}, {},area,{},{},endpoint);
+        window.show();
+        window.fileEnabled_->setChecked(false);
+        window.processEnabled_->setChecked(true);
+        window.processImages_->setChecked(true);
+        QTRY_VERIFY_WITH_TIMEOUT(window.watch_->isEnabled(),7000);
+        window.watch_->click();
+        QTRY_VERIFY_WITH_TIMEOUT(window.serviceMonitor_.ready,6000);
+        QProcess own;
+        own.start(helper,{"--children","0","--delay-ms","1000","--hold-ms","10000"});
+        QVERIFY(own.waitForStarted(3000));
+        QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),1,4500);
+        QVERIFY(!window.visibleRows_.empty());
+        const auto detection=window.visibleRows_.front();
+        const service::Client client(endpoint);
+        const auto key=service::resultKey(detection);
+        if(client.inspectProcess(detection.jobId,key)["code"]=="unsupported")QSKIP("Безопасное завершение недоступно");
+        QTRY_VERIFY_WITH_TIMEOUT(client.inspectProcess(detection.jobId,key)["eligible"].toBool(),6500);
+        window.table_->selectRow(0);
+        auto *button=window.findChild<QPushButton *>("terminateDetectedProcess");
+        QVERIFY(button);
+        QTRY_VERIFY_WITH_TIMEOUT(button->isEnabled(),3000);
+        bool asked=false,defaultNo=false;
+        auto answer=QMessageBox::No;
+        QTimer respond;
+        connect(&respond,&QTimer::timeout,&window,[&] {
+            if(auto *dialog=qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                asked=true;
+                defaultNo=dialog->defaultButton()==dialog->button(QMessageBox::No);
+                dialog->button(answer)->click();
+            }
+        });
+        respond.start(20);
+        button->click();
+        QTRY_VERIFY_WITH_TIMEOUT(asked && defaultNo,3000);
+        QCOMPARE(own.state(),QProcess::Running);
+        QTRY_VERIFY_WITH_TIMEOUT(button->isEnabled(),3000);
+        asked=false;
+        answer=QMessageBox::Yes;
+        button->click();
+        QTRY_VERIFY_WITH_TIMEOUT(asked,3000);
+        QTRY_COMPARE_WITH_TIMEOUT(own.state(),QProcess::NotRunning,3000);
+        QTRY_VERIFY_WITH_TIMEOUT(window.serviceError_->text().contains(QStringLiteral("Действие записано в журнал")),3000);
+        QVERIFY(QFileInfo::exists(helper));
+    }
+
+    void serviceWindowKeepsMonitoringAndOpensModuleNotifications() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const auto watched=temp.filePath("watched");
+        QVERIFY(QDir().mkdir(watched));
+        const auto signatures=temp.filePath("signatures.db");
+        createSignatures(QStringLiteral(RESHETO_SOURCE_DIR)+"/data/demo_signatures.json",signatures);
+        const auto storage=temp.filePath("history.db");
+        const auto endpoint="resheto-gui-"+QUuid::createUuid().toString(QUuid::WithoutBraces);
+        auto executable=QCoreApplication::applicationDirPath()+"/resheto-service";
+#ifdef Q_OS_WIN
+        executable+=".exe";
+#endif
+        QStringList arguments{"--endpoint",endpoint,"--db",signatures,"--storage",storage};
+#ifdef RESHETO_SERVICE_NETWORK
+        const auto rules=QStringLiteral(RESHETO_SOURCE_DIR)+"/data/network_rules.json";
+        arguments<<"--network-rules"<<rules;
+#endif
+        QProcess service;
+        service.start(executable,arguments);
+        const auto cleanup=qScopeGuard([&]{
+            if(service.state()!=QProcess::NotRunning){service.kill();service.waitForFinished(3000);}
+        });
+        QVERIFY2(service.waitForStarted(3000),qPrintable(service.errorString()));
+        Request request;
+        QString monitorId;
+        {
+            MainWindow window(request,{},{},watched,{},endpoint);
+            window.show();
+            QTRY_VERIFY_WITH_TIMEOUT(window.watch_->isEnabled(),6000);
+            window.watch_->click();
+            QTRY_VERIFY_WITH_TIMEOUT(window.serviceMonitor_.ready,6000);
+            monitorId=window.monitorJobId_;
+            QVERIFY(!monitorId.isEmpty());
+            window.close();
+        }
+        QVERIFY(service::Client(endpoint).monitorStatus().active);
+        const auto input=watched+"/known.bin";
+        {
+            QFile file(input);
+            QVERIFY(file.open(QIODevice::WriteOnly|QIODevice::NewOnly));
+            const auto bytes=QByteArray::fromHex("010200ff5245534845544f000304");
+            QCOMPARE(file.write(bytes),bytes.size());
+        }
+        MainWindow window(request,{},{},temp.filePath("local-default"),{},endpoint);
+        window.show();
+        QTRY_VERIFY_WITH_TIMEOUT(window.monitorActive_ && window.monitorJobId_==monitorId,6000);
+        QCOMPARE(window.watchPath_->text(),watched);
+        auto *notifications=window.findChild<QWidget *>("serviceNotifications");
+        QVERIFY(notifications);
+        auto *entries=notifications->findChild<QTableWidget *>("reactionEntries");
+        auto *open=notifications->findChild<QPushButton *>("notificationOpenResult");
+        QVERIFY(entries && open);
+        window.tabs_->setCurrentWidget(notifications);
+        QTRY_COMPARE_WITH_TIMEOUT(entries->rowCount(),1,7000);
+        QCOMPARE(entries->item(0,3)->text(),input);
+        const auto detectedAt=QDateTime::fromString(entries->item(0,0)->text(),Qt::ISODateWithMs);
+        QVERIFY(detectedAt.isValid());
+        const auto fileNoticeLatency=detectedAt.msecsTo(QDateTime::currentDateTimeUtc());
+        qInfo()<<"service file detection to notification, latency_ms"<<fileNoticeLatency;
+        QVERIFY(fileNoticeLatency>=0 && fileNoticeLatency<=5000);
+        entries->selectRow(0);
+        QVERIFY(open->isEnabled());
+        open->click();
+        QCOMPARE(window.tabs_->currentIndex(),1);
+        QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),1,6000);
+        QCOMPARE(window.table_->item(0,0)->text(),input);
+#ifdef RESHETO_SERVICE_NETWORK
+        auto *network=window.findChild<QWidget *>("networkPanel");
+        QVERIFY(network);
+        const auto pcap=temp.filePath("own.pcap");
+        {
+            using namespace resheto::network;
+            std::vector<CapturedPacket> packets;
+            for(int index=0;index<20;++index)
+                packets.push_back(resheto::network::fixtures::tcp(1000000+index*1000,40000,static_cast<quint16>(10000+index),index+1));
+            QFile file(pcap);
+            QVERIFY(file.open(QIODevice::WriteOnly|QIODevice::NewOnly));
+            const auto bytes=resheto::network::fixtures::pcap(packets);
+            QCOMPARE(file.write(bytes),bytes.size());
+        }
+        window.tabs_->setCurrentWidget(network);
+        auto *sourceMode=network->findChild<QComboBox *>("networkSource");
+        auto *pcapInput=network->findChild<QLineEdit *>("networkPcap");
+        auto *networkStart=network->findChild<QPushButton *>("networkStart");
+        auto *networkResults=network->findChild<QTableWidget *>("networkResults");
+        auto *networkView=network->findChild<QTabBar *>("networkResultView");
+        QVERIFY(sourceMode && pcapInput && networkStart && networkResults && networkView);
+        sourceMode->setCurrentIndex(1);
+        pcapInput->setText(pcap);
+        QTRY_VERIFY_WITH_TIMEOUT(networkStart->isEnabled(),5000);
+        QElapsedTimer networkNoticeLatency;networkNoticeLatency.start();
+        networkStart->click();
+        window.tabs_->setCurrentWidget(notifications);
+        QTRY_COMPARE_WITH_TIMEOUT(entries->rowCount(),2,8000);
+        const auto elapsed=networkNoticeLatency.elapsed();
+        qInfo()<<"service PCAP start to notification, latency_ms"<<elapsed;
+        QVERIFY(elapsed<=5000);
+        QCOMPARE(entries->item(1,2)->text(),QStringLiteral("Сеть"));
+        entries->selectRow(1);
+        QVERIFY(open->isEnabled());
+        open->click();
+        QCOMPARE(window.tabs_->currentWidget(),network);
+        QCOMPARE(networkView->currentIndex(),1);
+        QTRY_VERIFY_WITH_TIMEOUT(networkResults->rowCount()==1 && networkResults->item(0,0)->text().contains(":10019"),7000);
+        QCOMPARE(networkResults->currentRow(),0);
+#endif
+        QVERIFY(service::Client(endpoint).monitorStatus().active);
+        window.watchStop_->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!window.monitorActive_,6000);
+    }
+
+    void scanWithLocalServiceAndReopenHistory() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const auto source=temp.filePath("rules.json"), signatures=temp.filePath("signatures.db");
+        QFile rules(source);
+        QVERIFY(rules.open(QIODevice::WriteOnly));
+        const auto document=QByteArray(R"({"version":"test-service-gui","signatures":[{"id":"fixture","name":"Контроль службы","kind":"PATTERN","value":"aa00bb","version":"1","enabled":1}]})");
+        QCOMPARE(rules.write(document),document.size());
+        rules.close();
+        createSignatures(source,signatures);
+        const auto scanned=temp.filePath("files");
+        QVERIFY(QDir().mkpath(scanned));
+        constexpr int fileCount=240;
+        for(int i=0;i<fileCount;++i) {
+            QFile file(QDir(scanned).filePath(QString::number(i)+".bin"));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(QByteArray::fromHex("aa00bb")),qint64(3));
+        }
+        const auto negative=temp.filePath("ordinary");
+        QVERIFY(QDir().mkpath(negative));
+        {
+            QFile file(QDir(negative).filePath("own.txt"));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write("own harmless bytes"),qint64(18));
+        }
+        const auto cancelFiles=temp.filePath("cancel-files");
+        QVERIFY(QDir().mkpath(cancelFiles));
+        for(int i=0;i<600;++i) {
+            QFile file(QDir(cancelFiles).filePath(QString::number(i)+".bin"));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(QByteArray(1024,'q')),qint64(1024));
+        }
+        const auto storage=temp.filePath("history.db");
+        const auto endpoint="resheto-gui-"+QUuid::createUuid().toString(QUuid::WithoutBraces);
+        auto executable=QCoreApplication::applicationDirPath()+"/resheto-service";
+#ifdef Q_OS_WIN
+        executable+=".exe";
+#endif
+        QProcess service;
+        service.start(executable,{"--endpoint",endpoint,"--db",signatures,"--storage",storage});
+        const auto cleanup=qScopeGuard([&] {
+            if(service.state()!=QProcess::NotRunning) {service.kill();service.waitForFinished(3000);}
+        });
+        QVERIFY2(service.waitForStarted(3000),qPrintable(service.errorString()));
+        Request request;
+        request.path=scanned;
+        QString jobId;
+        {
+            MainWindow window(request,{},{},{},{},endpoint);
+            window.show();
+            QTRY_VERIFY_WITH_TIMEOUT(window.start_->isEnabled(),7000);
+            QCOMPARE(window.storage_->text(),storage);
+            QVERIFY(!window.storage_->isEnabled());
+            window.start_->click();
+            QTRY_VERIFY_WITH_TIMEOUT(!window.manualJobId_.isEmpty(),7000);
+            jobId=window.manualJobId_;
+            QVERIFY(window.running_);
+            QVERIFY(!window.controller_.busy());
+            window.close();
+        }
+        QCOMPARE(service.state(),QProcess::Running);
+        {
+            MainWindow reopened(request,{},{},{},{},endpoint);
+            reopened.show();
+            QTRY_COMPARE_WITH_TIMEOUT(reopened.jobs_->currentData().toString(),jobId,12000);
+            QTRY_VERIFY_WITH_TIMEOUT(reopened.start_->isEnabled(),12000);
+            QTRY_COMPARE_WITH_TIMEOUT(reopened.table_->rowCount(),200,15000);
+            QVERIFY(reopened.table_->item(0,2)->text().contains(QStringLiteral("Контроль службы")));
+            const auto manualControlsEnabled=[&] {
+                for(const auto *input:reopened.manualInputs_)if(!input->isEnabled())return false;
+                return true;
+            };
+            QTRY_VERIFY_WITH_TIMEOUT(manualControlsEnabled(),2000);
+            QVERIFY(!reopened.stop_->isEnabled());
+
+            const auto singleFile=QDir(scanned).filePath("0.bin");
+            reopened.path_->setText(singleFile);
+            reopened.recursive_->setChecked(false);
+            reopened.start_->click();
+            QTRY_VERIFY_WITH_TIMEOUT(reopened.manualJobId_!=jobId,5000);
+            const auto singleId=reopened.manualJobId_;
+            QTRY_VERIFY_WITH_TIMEOUT(reopened.start_->isEnabled() && !reopened.running_,7000);
+            QVERIFY(manualControlsEnabled());
+            QVERIFY(!reopened.stop_->isEnabled());
+            QVERIFY(!reopened.controller_.busy());
+            const auto singleSaved=service::Client(endpoint).getJob(singleId);
+            QVERIFY(singleSaved);
+            QCOMPARE(singleSaved->path,singleFile);
+            QCOMPARE(singleSaved->state,QString("completed"));
+            QCOMPARE(singleSaved->matches,qint64(1));
+            auto *isolate=reopened.findChild<QPushButton *>("quarantineSelectedResult");
+            auto *quarantine=reopened.findChild<QWidget *>("serviceQuarantine");
+            QVERIFY(isolate && quarantine);
+            QTRY_VERIFY_WITH_TIMEOUT(reopened.table_->rowCount()==1 &&
+                                     reopened.table_->item(0,0)->text()==singleFile,5000);
+            reopened.table_->selectRow(0);
+            QTRY_VERIFY_WITH_TIMEOUT(isolate->isEnabled(),5000);
+            bool asked=false,defaultNo=false;
+            QMessageBox::StandardButton answer=QMessageBox::No;
+            QTimer confirm;
+            confirm.setInterval(20);
+            connect(&confirm,&QTimer::timeout,&reopened,[&] {
+                if(auto *box=qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                    asked=true;
+                    defaultNo=box->defaultButton()==box->button(QMessageBox::No);
+                    box->button(answer)->click();
+                }
+            });
+            confirm.start();
+            isolate->click();
+            QVERIFY(asked && defaultNo);
+            QVERIFY(QFileInfo::exists(singleFile));
+            QCOMPARE(reopened.tabs_->currentIndex(),0);
+            asked=false;
+            answer=QMessageBox::Yes;
+            isolate->click();
+            QVERIFY(asked);
+            QCOMPARE(reopened.tabs_->currentWidget(),quarantine);
+            auto *entries=quarantine->findChild<QTableWidget *>("reactionEntries");
+            auto *restore=quarantine->findChild<QPushButton *>("restoreQuarantine");
+            QVERIFY(entries && restore);
+            QTRY_COMPARE_WITH_TIMEOUT(entries->rowCount(),1,7000);
+            QVERIFY(!QFileInfo::exists(singleFile));
+            entries->selectRow(0);
+            QVERIFY(restore->isEnabled());
+            asked=false;
+            restore->click();
+            QVERIFY(asked);
+            confirm.stop();
+            QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(singleFile) && entries->item(0,2) &&
+                                     entries->item(0,2)->text()==QStringLiteral("Восстановлен"),7000);
+            reopened.tabs_->setCurrentIndex(0);
+            QTRY_VERIFY_WITH_TIMEOUT(reopened.start_->isEnabled(),7000);
+
+            reopened.path_->setText(negative);
+            reopened.recursive_->setChecked(true);
+            reopened.start_->click();
+            QTRY_VERIFY_WITH_TIMEOUT(reopened.manualJobId_!=singleId,5000);
+            const auto ordinaryId=reopened.manualJobId_;
+            QTRY_VERIFY_WITH_TIMEOUT(reopened.start_->isEnabled() && !reopened.running_,7000);
+            QVERIFY(manualControlsEnabled());
+            QVERIFY(!reopened.stop_->isEnabled());
+            QVERIFY(!reopened.controller_.busy());
+            const auto ordinarySaved=service::Client(endpoint).getJob(ordinaryId);
+            QVERIFY(ordinarySaved);
+            QCOMPARE(ordinarySaved->path,negative);
+            QCOMPARE(ordinarySaved->state,QString("completed"));
+            QCOMPARE(ordinarySaved->checked,qint64(1));
+            QCOMPARE(ordinarySaved->matches,qint64(0));
+
+            reopened.path_->setText(cancelFiles);
+            reopened.start_->click();
+            QTRY_VERIFY_WITH_TIMEOUT(reopened.manualJobId_!=ordinaryId && reopened.running_ && reopened.stop_->isEnabled(),5000);
+            const auto cancelledId=reopened.manualJobId_;
+            QVERIFY(!manualControlsEnabled());
+            reopened.stop_->click();
+            QTRY_VERIFY_WITH_TIMEOUT(reopened.start_->isEnabled() && !reopened.running_,7000);
+            QVERIFY(manualControlsEnabled());
+            QVERIFY(!reopened.stop_->isEnabled());
+            QVERIFY(!reopened.controller_.busy());
+            const auto cancelled=service::Client(endpoint).getJob(cancelledId);
+            QVERIFY(cancelled);
+            QCOMPARE(cancelled->path,cancelFiles);
+            QCOMPARE(cancelled->state,QString("cancelled"));
+            QCOMPARE(cancelled->exitCode(),3);
+        }
+        const auto saved=Store(storage,true).getJob(jobId);
+        QVERIFY(saved);
+        QCOMPARE(saved->state,QString("completed"));
+        QCOMPARE(saved->matches,qint64(fileCount));
+    }
+#endif
     void startupFillsRulesAndAreasAndRespectsArguments() {
         QTemporaryDir temp;
         QVERIFY(temp.isValid());
@@ -106,6 +478,16 @@ private slots:
         QCOMPARE(otherHistory.request.signaturePath,defaults.request.signaturePath);
         QCOMPARE(otherHistory.watchPath,temp.filePath("custom/resheto-work/watched"));
         QVERIFY(QFileInfo(otherHistory.watchPath).isDir() && !QFileInfo::exists(history));
+#ifdef RESHETO_WITH_SERVICE
+        QCommandLineParser serviceParser;
+        addGuiOptions(serviceParser,workingDir,source);
+        QVERIFY(serviceParser.parse({"resheto","--service","resheto-test","--path","demo.bin","--storage",history}));
+        const auto remote=guiStartup(serviceParser,QDir(temp.filePath("unused-gui-local")));
+        QCOMPARE(remote.serviceEndpoint,QString("resheto-test"));
+        QCOMPARE(remote.request.path,QString("demo.bin"));
+        QVERIFY(remote.request.signaturePath.isEmpty() && remote.request.heuristicPath.isEmpty());
+        QVERIFY(remote.request.storagePath.isEmpty() && !QFileInfo::exists(temp.filePath("unused-gui-local")));
+#endif
     }
     void missingPreparedDataAndNewHistoryDirectory() {
         QTemporaryDir tmp(QDir::currentPath()+"/resheto-gui-paths-XXXXXX"); QVERIFY(tmp.isValid()); const auto root=tmp.path();
@@ -313,7 +695,8 @@ private slots:
         QTest::mouseClick(window.watchStop_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(!window.monitorActive_,5000); QTRY_VERIFY_WITH_TIMEOUT(window.watch_->isEnabled(),5000);
         QTest::mouseClick(window.watch_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(window.monitor_.status().ready,5000);
         QFile bad(root+"/broken.db"); QVERIFY(bad.open(QIODevice::WriteOnly)); bad.write("not SQLite"); bad.close();
-        window.storage_->setText(bad.fileName()); window.readPage(); window.view_.wait(); window.tick();
+        QTRY_VERIFY_WITH_TIMEOUT(!window.view_.valid(),5000);
+        window.storage_->setText(bad.fileName()); window.readPage(); QVERIFY(window.view_.valid()); window.view_.wait(); window.tick();
         QTRY_VERIFY_WITH_TIMEOUT(!window.monitorActive_,5000); QVERIFY(window.historyErrorLabel_->isVisible()); QVERIFY(window.historyErrorLabel_->text().contains("SQLite"));
         window.tick(); QVERIFY(window.historyErrorLabel_->isVisible()); QVERIFY(window.summary_->text().contains(QStringLiteral("из-за ошибки чтения")));
     }

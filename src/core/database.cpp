@@ -131,14 +131,16 @@ void Store::append(const Result &r,const Job &j) {
         auto q=db_.exec("INSERT INTO results(job_id,data) VALUES(?,?)",{r.jobId,encode(r.json())});
         if(isDetection(r)) {
             db_.exec("INSERT INTO detections(id,job_id,result_id,source,time,signature_id,signature_version,basis,rule_id,rule_version,details) VALUES(?,?,?,?,?,?,?,?,?,?,?)",{QUuid::createUuid().toString(QUuid::WithoutBraces),r.jobId,q.lastInsertId(),r.source,r.time,sqlText(r.signatureId),sqlText(r.signatureVersion),r.basis,sqlText(r.ruleId),sqlText(r.ruleVersion),encode(r.details)});
-            event(r.jobId,"detection",r.path,r.source=="signature"?r.signatureId:r.ruleId,r.source);
-        } else if(r.outcome=="not_checked" || r.completeness=="partial") event(r.jobId,r.skipped ? "skipped" : "file_error",r.path,r.code,r.source);
+            event(r.jobId,"detection",r.path,r.source=="signature"?r.signatureId:r.ruleId,r.source,{{"basis",r.basis}});
+        }
+        if(r.outcome=="not_checked" || r.completeness=="partial")
+            event(r.jobId,r.skipped ? "skipped" : "file_error",r.path,r.code,r.source,{{"reason",r.reason}});
         db_.exec("UPDATE jobs SET data=? WHERE id=?",{encode(j.json()),j.id}); db_.commit();
     } catch(...) { db_.rollback(); throw; }
 }
 void Store::finish(const Job &j) {
     db_.transaction();
-    try { db_.exec("UPDATE jobs SET data=? WHERE id=?",{encode(j.json()),j.id}); event(j.id,"job_finished",j.path,j.state); db_.commit(); }
+    try { db_.exec("UPDATE jobs SET data=? WHERE id=?",{encode(j.json()),j.id}); event(j.id,"job_finished",j.path,j.state,j.source,{{"reason",j.error}}); db_.commit(); }
     catch(...) { db_.rollback(); throw; }
 }
 std::optional<Job> Store::latest() {

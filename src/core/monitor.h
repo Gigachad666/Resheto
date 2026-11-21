@@ -13,6 +13,8 @@ struct MonitorRequest {
     Hooks fileHooks; // Управляемая граница чтения для отказных проверок, обычно пусто.
     QString id;
     bool files=true,scanProcessImages=false;
+    // Служебный маршрут сохраняет хеш обнаруженного файла для подтверждённой реакции.
+    bool recordDetectionDigest=false;
 };
 struct MonitorStatus {
     QString state="stopped",reason,coverage=QStringLiteral("Файловые события выбранного дерева; ограниченное наблюдение жизненного цикла процессов");

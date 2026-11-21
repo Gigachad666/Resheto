@@ -12,6 +12,7 @@ struct GuiStartup {
     QString processScope;
     QString watchPath;
     QString networkRules;
+    QString serviceEndpoint;
 };
 
 void addGuiOptions(QCommandLineParser &parser,const QDir &executableDir,const QDir &workingDir);

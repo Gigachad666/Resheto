@@ -39,6 +39,7 @@ struct Result {
     QJsonObject details;
     qint64 size = -1, offset = -1;
     bool skipped = false;
+    QString sha256;
     QJsonObject json() const;
     static Result fromJson(const QJsonObject &o);
 };
@@ -68,6 +69,7 @@ struct Request {
     std::shared_ptr<const HeuristicRules> heuristicRules;
     QString signatureError, heuristicError;
     Hooks hooks;
+    bool recordDetectionDigest=false;
 };
 QString outcomeText(const Result &r);
 bool isDetection(const Result &r);

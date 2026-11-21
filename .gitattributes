@@ -1,0 +1,3 @@
+# Контрольные суммы исходных снимков считаются по байтам.
+/distribution/source/full-hash-sha256-aa.txt -text
+/distribution/working/versions/**/source.txt -text

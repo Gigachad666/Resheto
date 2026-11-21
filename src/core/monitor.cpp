@@ -15,7 +15,10 @@ namespace resheto {
 namespace {
 qint64 monotonic() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 QString sourcesText(const MonitorRequest &r) {
-    return QStringLiteral("Файлы: %1; процессы: %2; проверка файлов процессов: %3").arg(r.files?QStringLiteral("вкл"):QStringLiteral("выкл"),r.processes?QStringLiteral("вкл"):QStringLiteral("выкл"),r.scanProcessImages?QStringLiteral("вкл"):QStringLiteral("выкл"));
+    auto description=QStringLiteral("Файлы: %1; процессы: %2; проверка файлов процессов: %3").arg(r.files?QStringLiteral("вкл"):QStringLiteral("выкл"),r.processes?QStringLiteral("вкл"):QStringLiteral("выкл"),r.scanProcessImages?QStringLiteral("вкл"):QStringLiteral("выкл"));
+    if(r.files)description+=QStringLiteral("; каталог файлов — %1").arg(r.directory);
+    if(r.processes)description+=QStringLiteral("; каталог образов — %1").arg(r.processImageDirectory.isEmpty()?r.directory:r.processImageDirectory);
+    return description;
 }
 bool imageInScope(const QString &image,const QString &scope) {
     if(image.isEmpty()) return false;
@@ -57,6 +60,15 @@ struct MonitorRuntime::Impl {
         wake.notify_all();
     }
     bool excludedPath(const QString &path) const {
+        if(request.recordDetectionDigest) {
+            const auto folder=absolute(request.storagePath)+QStringLiteral(".quarantine");
+            const auto candidate=absolute(path);
+#ifdef _WIN32
+            if(candidate.compare(folder,Qt::CaseInsensitive)==0 || candidate.startsWith(folder+"/",Qt::CaseInsensitive))return true;
+#else
+            if(candidate==folder || candidate.startsWith(folder+"/"))return true;
+#endif
+        }
         for(const auto &p:excluded) {
 #ifdef _WIN32
             if(absolute(path).compare(p,Qt::CaseInsensitive)==0) return true;
@@ -161,6 +173,7 @@ struct MonitorRuntime::Impl {
         try {
             Request file; file.id=job.id; file.source="file_event"; file.path=request.directory; file.signaturePath=request.signaturePath;
             file.heuristicPath=request.heuristicPath; file.storagePath=request.storagePath; file.cancel=stop; file.hooks=request.fileHooks;
+            file.recordDetectionDigest=request.recordDetectionDigest;
             store=std::make_unique<Store>(request.storagePath); store->start(job); started=true;
             if(request.files || request.scanProcessImages) {
                 if(!file.signaturePath.isEmpty()) { try { file.snapshot=loadSignatures(file.signaturePath); } catch(const Error &e) { file.signatureError=e.message; } }

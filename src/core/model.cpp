@@ -34,6 +34,13 @@ QString timeField(const QJsonObject &o,const char *key,bool emptyAllowed=false) 
     valid((s.isEmpty() && emptyAllowed) || (zone.match(s).hasMatch() && QDateTime::fromString(s,Qt::ISODateWithMs).isValid()),QString::fromLatin1(key)+QStringLiteral(": ожидается время ISO 8601 с часовым поясом"));
     return s;
 }
+void readDetectionDigest(Result &result,const QJsonObject &object) {
+    if(!object.contains("sha256"))return;
+    result.sha256=stringField(object,"sha256",true);
+    static const QRegularExpression sha256("\\A[0-9a-f]{64}\\z");
+    valid((result.outcome=="signature_match" || result.outcome=="heuristic_match") &&
+        sha256.match(result.sha256).hasMatch(),QStringLiteral("некорректный SHA-256 обнаружения"));
+}
 }
 // 64-битные счётчики и смещения кодируются десятичными строками без потери точности JSON.
 QJsonObject Result::json() const {
@@ -46,10 +53,15 @@ QJsonObject Result::json() const {
         o["schema_version"]=2; o["analysis_source"]=source; o["rules_version"]=rulesVersion;
         o["rule_id"]=ruleId; o["rule_name"]=ruleName; o["rule_version"]=ruleVersion; o["details"]=details; o["event_id"]=eventId;
     }
+    if(!sha256.isEmpty())o["sha256"]=sha256;
     return o;
 }
 Result Result::fromJson(const QJsonObject &o) {
-    if(o.contains("schema_version")) return resultV2(o);
+    if(o.contains("schema_version")) {
+        auto result=resultV2(o);
+        readDetectionDigest(result,o);
+        return result;
+    }
     Result r;
     r.jobId=stringField(o,"job_id",true); r.path=stringField(o,"path",true); r.identity=stringField(o,"identity");
     r.outcome=stringField(o,"outcome",true); r.completeness=stringField(o,"completeness",true);
@@ -71,6 +83,7 @@ Result Result::fromJson(const QJsonObject &o) {
     } else {
         valid(r.signatureId.isEmpty() && r.signatureName.isEmpty() && r.signatureVersion.isEmpty() && r.basis.isEmpty() && r.offset==-1,QStringLiteral("сведения об обнаружении без подтверждённого совпадения"));
     }
+    readDetectionDigest(r,o);
     return r;
 }
 QJsonObject Job::json() const {

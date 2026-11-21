@@ -40,6 +40,9 @@ void addGuiOptions(QCommandLineParser &parser,const QDir &executableDir,const QD
 #ifdef RESHETO_WITH_NETWORK
     parser.addOption({"network-rules",QStringLiteral("Сетевые правила"),"path",assets.absoluteFilePath("data/network_rules.json")});
 #endif
+#ifdef RESHETO_WITH_SERVICE
+    parser.addOption({"service",QStringLiteral("Подключиться к локальной службе"),"endpoint"});
+#endif
 }
 
 GuiStartup guiStartup(const QCommandLineParser &parser,const QDir &localDataDir) {
@@ -47,6 +50,18 @@ GuiStartup guiStartup(const QCommandLineParser &parser,const QDir &localDataDir)
     auto &request=settings.request;
     request.signaturePath=parser.value("db");
     request.heuristicPath=parser.value("heuristics");
+#ifdef RESHETO_WITH_SERVICE
+    settings.serviceEndpoint=parser.value("service");
+    if(!settings.serviceEndpoint.isEmpty()) {
+        request.path=parser.value("path");
+        request.signaturePath.clear();
+        request.heuristicPath.clear();
+        settings.watchPath=parser.value("watch-path");
+        settings.processScope=parser.value("process-scope");
+        settings.behaviorPath=parser.value("behavior");
+        return settings;
+    }
+#endif
     request.storagePath=parser.value("storage");
     if(request.storagePath.isEmpty())request.storagePath=localDataDir.absoluteFilePath("resheto.db");
 

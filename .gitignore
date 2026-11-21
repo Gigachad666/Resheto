@@ -1,10 +1,10 @@
 # В корне игнорируется всё, кроме перечисленного ниже.
 /*
 !/.gitignore
+!/.gitattributes
 !/README.md
 !/CMakeLists.txt
 !/CMakePresets.json
-!/ReadMeToo_Lab5.md
 
 # Исходники, тесты, примеры подключения и скрипты.
 !/src/
@@ -17,11 +17,12 @@
 !/data/
 !/distribution/
 
-# Публичные инструкции. Отчёты, планы и материалы разработки остаются локально.
+# Публичные инструкции и сводка испытаний. Логи и планы остаются локально.
 !/docs/
 /docs/*
 !/docs/integration.md
 !/docs/signature_sources.md
+!/docs/testing.md
 
 # Генерируемые файлы при сборке внутри разрешённых каталогов.
 build/
