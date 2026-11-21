@@ -78,7 +78,7 @@ class NetworkPanel : public QWidget {
     QPushButton *current_,*older_,*newer_,*previousPage_,*nextPage_,*copy_,*sample_,*sendSample_;
     QTableWidget *table_;
     QTabBar *resultKind_;
-    QWidget *detailPane_;
+    QWidget *detailPane_,*historyControls_;
     QPlainTextEdit *details_,*diagnosticText_;
     QToolButton *detailsToggle_,*diagnosticsToggle_;
     void tick();
@@ -105,6 +105,7 @@ class NetworkPanel : public QWidget {
 public:
     explicit NetworkPanel(const QString &storage,const QString &rulesPath,QWidget *parent=nullptr,const QString &serviceEndpoint={});
     ~NetworkPanel() override;
+    QWidget *historyControls() const { return historyControls_; }
     void setStorage(const QString &path);
     bool busy() const;
     void cancel() { session_.cancel(); }

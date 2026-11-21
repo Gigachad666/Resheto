@@ -193,6 +193,21 @@ private slots:
         QCOMPARE(window.tabs_->currentIndex(),1);
         QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),1,6000);
         QCOMPARE(window.table_->item(0,0)->text(),input);
+        // Пока загружается страница наблюдения, пользователь открывает ручную проверку.
+        window.resetPage();
+        window.readPage();
+        QVERIFY(window.view_.valid());
+        auto *tabBar=window.tabs_->tabBar();
+        QTest::mouseClick(tabBar,Qt::LeftButton,Qt::NoModifier,tabBar->tabRect(0).center());
+        QCOMPARE(window.tabs_->currentIndex(),0);
+        QVERIFY(!window.summary_->text().contains(monitorId));
+        QTRY_COMPARE_WITH_TIMEOUT(window.summary_->text(),QStringLiteral("Нет заданий ручной проверки"),6000);
+        QCOMPARE(window.tabs_->currentIndex(),0);
+        QCOMPARE(window.table_->rowCount(),0);
+        QCOMPARE(window.jobs_->currentIndex(),-1);
+        QTest::mouseClick(tabBar,Qt::LeftButton,Qt::NoModifier,tabBar->tabRect(1).center());
+        QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),1,6000);
+        QCOMPARE(window.table_->item(0,0)->text(),input);
 #ifdef RESHETO_SERVICE_NETWORK
         auto *network=window.findChild<QWidget *>("networkPanel");
         QVERIFY(network);
@@ -236,6 +251,101 @@ private slots:
         QVERIFY(service::Client(endpoint).monitorStatus().active);
         window.watchStop_->click();
         QTRY_VERIFY_WITH_TIMEOUT(!window.monitorActive_,6000);
+    }
+
+    void serviceManualAndProcessNotificationsMeetDeadline() {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const auto programs=temp.filePath("programs");
+        QVERIFY(QDir().mkdir(programs));
+        const auto helper=programs+"/"+QFileInfo(QStringLiteral(RESHETO_HELPER_PATH)).fileName();
+        QVERIFY(QFile::copy(QStringLiteral(RESHETO_HELPER_PATH),helper));
+        const auto signatures=temp.filePath("signatures.db");
+        const auto root=QStringLiteral(RESHETO_SOURCE_DIR);
+        createSignatures(root+"/data/demo_signatures.json",signatures);
+        const auto manual=temp.filePath("manual.bin");
+        {
+            QFile file(manual);
+            QVERIFY(file.open(QIODevice::WriteOnly|QIODevice::NewOnly));
+            const auto bytes=QByteArray::fromHex("010200ff5245534845544f000304");
+            QCOMPARE(file.write(bytes),bytes.size());
+        }
+        const auto endpoint="resheto-gui-notify-"+QUuid::createUuid().toString(QUuid::WithoutBraces);
+        auto executable=QCoreApplication::applicationDirPath()+"/resheto-service";
+#ifdef Q_OS_WIN
+        executable+=".exe";
+#endif
+        QProcess service;
+        service.start(executable,{"--endpoint",endpoint,"--db",signatures,"--storage",temp.filePath("history.db")});
+        const auto cleanup=qScopeGuard([&] {
+            if(service.state()!=QProcess::NotRunning){service.kill();service.waitForFinished(3000);}
+        });
+        QVERIFY2(service.waitForStarted(3000),qPrintable(service.errorString()));
+        Request request;
+        request.path=manual;
+        MainWindow window(request,root+"/data/behavior_rules.json",programs,{},{},endpoint);
+        window.show();
+        auto *notifications=window.findChild<QWidget *>("serviceNotifications");
+        QVERIFY(notifications);
+        auto *entries=notifications->findChild<QTableWidget *>("reactionEntries");
+        auto *open=notifications->findChild<QPushButton *>("notificationOpenResult");
+        QVERIFY(entries && open);
+        const auto latency=[&] {
+            const auto detected=QDateTime::fromString(entries->item(0,0)->text(),Qt::ISODateWithMs);
+            return detected.isValid()?detected.msecsTo(QDateTime::currentDateTimeUtc()):qint64(-1);
+        };
+
+        QTRY_VERIFY_WITH_TIMEOUT(window.start_->isEnabled(),6000);
+        window.start_->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!window.manualJobId_.isEmpty(),5000);
+        window.tabs_->setCurrentWidget(notifications);
+        QTRY_COMPARE_WITH_TIMEOUT(entries->rowCount(),1,5000);
+        const auto manualMs=latency();
+        qInfo()<<"service manual detection to notification, latency_ms"<<manualMs;
+        QVERIFY(manualMs>=0 && manualMs<=5000);
+        QCOMPARE(entries->item(0,2)->text(),QStringLiteral("Ручная проверка"));
+        QCOMPARE(entries->item(0,3)->text(),manual);
+        entries->selectRow(0);
+        QTRY_VERIFY_WITH_TIMEOUT(open->isEnabled(),3000);
+        open->click();
+        QCOMPARE(window.tabs_->currentIndex(),0);
+        QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),1,5000);
+        QCOMPARE(window.visibleRows_.front().path,manual);
+        QCOMPARE(window.visibleRows_.front().signatureId,QStringLiteral("test-exact"));
+
+        window.fileEnabled_->setChecked(false);
+        window.processEnabled_->setChecked(true);
+        QTRY_VERIFY_WITH_TIMEOUT(window.watch_->isEnabled(),6000);
+        window.watch_->click();
+        QTRY_VERIFY_WITH_TIMEOUT(window.serviceMonitor_.ready,5000);
+        window.tabs_->setCurrentWidget(notifications);
+        QProcess own;
+        own.start(helper,{"--children","3","--delay-ms","600","--hold-ms","3000"});
+        const auto finishOwn=qScopeGuard([&] {
+            if(own.state()!=QProcess::NotRunning && !own.waitForFinished(6000)) {
+                own.kill();
+                own.waitForFinished(3000);
+            }
+        });
+        QVERIFY2(own.waitForStarted(3000),qPrintable(own.errorString()));
+        const auto pid=QString::number(own.processId());
+        QTRY_COMPARE_WITH_TIMEOUT(entries->rowCount(),2,7000);
+        const auto processMs=latency();
+        qInfo()<<"service process detection to notification, latency_ms"<<processMs;
+        QVERIFY(processMs>=0 && processMs<=5000);
+        QCOMPARE(entries->item(0,2)->text(),QStringLiteral("Процессы"));
+        QCOMPARE(entries->item(0,3)->text(),helper);
+        QVERIFY(entries->item(0,5)->text().contains("child-process-burst"));
+        entries->selectRow(0);
+        QTRY_VERIFY_WITH_TIMEOUT(open->isEnabled(),3000);
+        open->click();
+        QCOMPARE(window.tabs_->currentIndex(),2);
+        QTRY_COMPARE_WITH_TIMEOUT(window.table_->rowCount(),1,5000);
+        QCOMPARE(window.visibleRows_.front().path,helper);
+        QCOMPARE(window.visibleRows_.front().ruleId,QStringLiteral("child-process-burst"));
+        QVERIFY(window.table_->item(0,0)->text().startsWith("PID "+pid+" — "));
+        QVERIFY(own.state()==QProcess::NotRunning || own.waitForFinished(6000));
+        QCOMPARE(own.exitCode(),0);
     }
 
     void scanWithLocalServiceAndReopenHistory() {
@@ -714,19 +824,48 @@ private slots:
         QCOMPARE(window.jobs_->currentData().toString(),manualId);
         put(root+"/watched/first",QByteArray::fromHex("aabbcc")); QTRY_VERIFY_WITH_TIMEOUT(window.monitor_.status().job.matches==1,5000); QCOMPARE(window.jobId_,manualId);
         QTest::mouseClick(window.stop_,Qt::LeftButton); {std::lock_guard lock(mutex);release=true;}wake.notify_all(); QTRY_VERIFY_WITH_TIMEOUT(!window.running_,5000); QVERIFY(window.monitorActive_);
-        {Store history(r.storagePath,true); QCOMPARE(history.getJob(manualId)->state,"cancelled"); QCOMPARE(history.getJob(monitorId,false)->state,"running");}
+        qint64 cancelledRows=0;
+        {
+            Store history(r.storagePath,true);
+            const auto cancelled=history.getJob(manualId);
+            QVERIFY(cancelled);
+            QCOMPARE(cancelled->state,"cancelled");
+            cancelledRows=cancelled->results;
+            QCOMPARE(history.getJob(monitorId,false)->state,"running");
+        }
         QTRY_VERIFY_WITH_TIMEOUT(window.currentMonitor_->isEnabled() && window.currentManual_->isEnabled(),5000);
         QTest::mouseClick(window.currentMonitor_,Qt::LeftButton); QCOMPARE(window.jobId_,monitorId); QCOMPARE(window.jobs_->currentData().toString(),window.jobId_);
         QTRY_VERIFY_WITH_TIMEOUT(window.summary_->text().contains(monitorId) && !window.view_.valid() && !window.visibleRows_.empty(),5000); QCOMPARE(window.visibleRows_.front().jobId,monitorId); QVERIFY(window.monitorActive_);
         QTest::mouseClick(window.currentManual_,Qt::LeftButton); QCOMPARE(window.jobId_,manualId); QCOMPARE(window.jobs_->currentData().toString(),window.jobId_);
         QTRY_VERIFY_WITH_TIMEOUT(window.summary_->text().contains(manualId) && !window.view_.valid(),5000); QVERIFY(window.monitorActive_);
+        auto *tabBar=window.tabs_->tabBar();
+        QTest::mouseClick(tabBar,Qt::LeftButton,Qt::NoModifier,tabBar->tabRect(1).center());
+        QTRY_VERIFY_WITH_TIMEOUT(!window.visibleRows_.empty(),5000);
+        QCOMPARE(window.visibleRows_.front().jobId,monitorId);
+        QTest::mouseClick(tabBar,Qt::LeftButton,Qt::NoModifier,tabBar->tabRect(0).center());
+        QCOMPARE(window.tabs_->currentIndex(),0);
+        QCOMPARE(window.jobId_,manualId);
+        QTRY_VERIFY_WITH_TIMEOUT(window.summary_->text().contains(manualId),5000);
+        QCOMPARE(window.jobs_->currentData().toString(),manualId);
+        QCOMPARE(qint64(window.table_->rowCount()),cancelledRows);
+        for(const auto &row:window.visibleRows_) {QCOMPARE(row.jobId,manualId);QCOMPARE(row.path,r.path);}
         QTRY_VERIFY_WITH_TIMEOUT(window.jobs_->findData(manualId)>=0,5000); window.jobs_->setCurrentIndex(window.jobs_->findData(manualId));
         put(root+"/watched/second",QByteArray::fromHex("aabbcc")); QTRY_VERIFY_WITH_TIMEOUT(window.monitor_.status().job.matches==2,5000); QTest::qWait(350); QCOMPARE(window.jobId_,manualId); QVERIFY(window.summary_->text().contains(manualId));
         QCOMPARE(window.jobs_->currentData().toString(),manualId);
         {std::lock_guard lock(mutex);entered=false;release=false;} QTest::mouseClick(window.start_,Qt::LeftButton); {std::unique_lock lock(mutex);QVERIFY(wake.wait_for(lock,std::chrono::seconds(5),[&]{return entered;}));}
         QTest::mouseClick(window.watchStop_,Qt::LeftButton); QTRY_VERIFY_WITH_TIMEOUT(!window.monitorActive_,5000); QVERIFY(window.running_); {std::lock_guard lock(mutex);release=true;}wake.notify_all();
         QTRY_VERIFY_WITH_TIMEOUT(!window.running_,5000); {Store history(r.storagePath,true); const auto job=history.getJob(window.manualJobId_); QCOMPARE(job->state,"completed"); QCOMPARE(job->matches,1); QCOMPARE(history.getJob(monitorId)->state,"cancelled");}
+        QTest::mouseClick(tabBar,Qt::LeftButton,Qt::NoModifier,tabBar->tabRect(1).center());
+        QTRY_VERIFY_WITH_TIMEOUT(!window.visibleRows_.empty() && window.visibleRows_.front().jobId==monitorId,5000);
+        QTest::mouseClick(tabBar,Qt::LeftButton,Qt::NoModifier,tabBar->tabRect(0).center());
+        QTRY_VERIFY_WITH_TIMEOUT(!window.visibleRows_.empty() && window.visibleRows_.front().jobId==window.manualJobId_,5000);
+        QCOMPARE(window.visibleRows_.front().path,r.path);
         QVERIFY(window.grab().save(QDir::currentPath()+"/gui-parallel-preview.png"));
+        QTest::mouseClick(tabBar,Qt::LeftButton,Qt::NoModifier,tabBar->tabRect(1).center());
+        QTRY_VERIFY_WITH_TIMEOUT(window.jobs_->findData(manualId)>=0,5000);
+        window.jobs_->setCurrentIndex(window.jobs_->findData(manualId));
+        QCOMPARE(window.tabs_->currentIndex(),0);
+        QTRY_VERIFY_WITH_TIMEOUT(window.summary_->text().contains(manualId),5000);
     }
     void processImageResultsAreScopedAndSearchable() {
         QTemporaryDir temp(QDir::currentPath()+"/gui-process-XXXXXX"); QVERIFY(temp.isValid()); const auto root=temp.path(); QVERIFY(QDir().mkpath(root+"/programs"));

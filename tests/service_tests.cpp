@@ -463,6 +463,55 @@ private slots:
         QVERIFY(actions.contains("delete:completed"));
     }
 
+    void quarantineRestoresFileLargerThan256MiB() {
+        Fixture fixture;
+        const auto input=fixture.directory.filePath("large-own.bin");
+        constexpr int mebibytes=257;
+        constexpr qint64 blockSize=1024*1024;
+        const auto signature=QByteArray::fromHex("010200ff5245534845544f000304");
+        QCryptographicHash original(QCryptographicHash::Sha256);
+        {
+            QFile file(input);
+            QVERIFY(file.open(QIODevice::WriteOnly|QIODevice::NewOnly));
+            QByteArray block(blockSize,'z');
+            block.replace(0,signature.size(),signature);
+            QCOMPARE(file.write(block),blockSize);
+            original.addData(block);
+            block.fill('z');
+            for(int i=1;i<mebibytes;++i) {
+                QCOMPARE(file.write(block),blockSize);
+                original.addData(block);
+            }
+            QVERIFY(file.flush());
+        }
+        const auto digest=original.result().toHex();
+        fixture.start();
+        const Client client(fixture.endpoint);
+        const auto job=client.startScan(input,false);
+        QTRY_VERIFY_WITH_TIMEOUT(!client.status().busy,20000);
+        const auto result=client.query(job.id,{}).rows.at(0);
+        QCOMPARE(result.signatureId,QStringLiteral("test-exact"));
+        QCOMPARE(result.size,mebibytes*blockSize);
+        QCOMPARE(result.sha256,QString::fromLatin1(digest));
+
+        const auto item=client.quarantine(job.id,resultKey(result));
+        QCOMPARE(item["state"].toString(),QStringLiteral("stored"));
+        QCOMPARE(item["size"].toString(),QString::number(mebibytes*blockSize));
+        QVERIFY(!QFileInfo::exists(input));
+        const auto id=item["id"].toString();
+        QCOMPARE(client.restoreQuarantine(id)["state"].toString(),QStringLiteral("restored"));
+        QFile restored(input);
+        QVERIFY(restored.open(QIODevice::ReadOnly));
+        QCryptographicHash content(QCryptographicHash::Sha256);
+        QVERIFY(content.addData(&restored));
+        QCOMPARE(restored.size(),mebibytes*blockSize);
+        QCOMPARE(content.result().toHex(),digest);
+        restored.close();
+        QCOMPARE(client.deleteQuarantine(id)["state"].toString(),QStringLiteral("deleted"));
+        QVERIFY(QFileInfo::exists(input));
+        qInfo()<<"large quarantine, restored bytes"<<mebibytes*blockSize<<"sha256"<<digest;
+    }
+
     void configPathsOverridesAndDiagnosticStatus() {
         Fixture fixture;
         const auto config=fixture.directory.filePath("service.json");

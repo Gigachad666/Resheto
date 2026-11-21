@@ -33,10 +33,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSignalBlocker>
+#include <algorithm>
 #include <utility>
 
 namespace resheto {
 namespace {
+constexpr int JobSourceRole=Qt::UserRole+1;
+
 QString shortSummary(const Job &j) {
     return QStringLiteral("%1; проверено %2; совпадений %3; ошибок %4").arg(stateText(j.state)).arg(j.checked).arg(j.matches).arg(j.errors);
 }
@@ -142,6 +145,9 @@ MainWindow::MainWindow(const Request &defaults,const QString &behaviorPath,const
     }
 #ifdef RESHETO_WITH_NETWORK
     networkPanel_=new NetworkPanel(storage_->text(),networkRulesPath,nullptr,serviceEndpoint_);
+    auto *networkHistory=networkPanel_->historyControls();
+    layout->insertWidget(layout->indexOf(resultsArea),networkHistory);
+    networkHistory->hide();
     const int networkIndex=tabs_->addTab(networkPanel_,QStringLiteral("Сеть"));
     connect(networkPanel_,&NetworkPanel::activeChanged,this,[this]{setInputsEnabled(true);});
     connect(networkPanel_,&NetworkPanel::detectionNotice,this,[this,networkIndex](qint64 count){tabs_->setTabText(networkIndex,count && tabs_->currentIndex()!=networkIndex?QStringLiteral("Сеть · %1").arg(count):QStringLiteral("Сеть"));});
@@ -165,7 +171,14 @@ MainWindow::MainWindow(const Request &defaults,const QString &behaviorPath,const
     connect(db_,&QLineEdit::textChanged,this,[this]{databaseReady_=false; start_->setEnabled(false); databaseState_->setText(QStringLiteral("Проверка базы…")); probe();}); auto changedHeuristics=[this]{heuristicReady_=false; start_->setEnabled(false); probe();}; connect(heuristicEnabled_,&QCheckBox::toggled,this,changedHeuristics); connect(heuristics_,&QLineEdit::textChanged,this,changedHeuristics);
     connect(start_,&QPushButton::clicked,this,&MainWindow::start); connect(stop_,&QPushButton::clicked,this,&MainWindow::stopManual); connect(watch_,&QPushButton::clicked,this,&MainWindow::startMonitor); connect(watchStop_,&QPushButton::clicked,this,&MainWindow::stopMonitor);
     connect(storage_,&QLineEdit::editingFinished,this,[this]{loadHistory();}); connect(first_,&QPushButton::clicked,this,[this]{resetPage(); readPage();}); connect(next_,&QPushButton::clicked,this,[this]{resetPage(false); readPage();}); connect(tabs_,&QTabWidget::currentChanged,this,[this](int index){selectView(index);}); connect(processSearch_,&QLineEdit::textChanged,this,[this]{showProcesses();});
-    connect(jobs_,&QComboBox::currentIndexChanged,this,[this](int index){if(index>=0) selectJob(jobs_->itemData(index).toString());}); connect(earlier_,&QPushButton::clicked,this,[this]{earlier_->setEnabled(false); jobOffset_+=50; jobsDirty_=true; needRead_=true;});
+    connect(jobs_,&QComboBox::currentIndexChanged,this,[this](int index){
+        if(index<0)return;
+        const auto id=jobs_->itemData(index).toString();
+        const bool monitoring=jobs_->itemData(index,JobSourceRole).toString()=="monitor";
+        tabs_->setCurrentIndex(monitoring?(activeView_==2?2:1):0);
+        selectJob(id);
+    });
+    connect(earlier_,&QPushButton::clicked,this,[this]{earlier_->setEnabled(false); jobOffset_+=50; jobsDirty_=true; needRead_=true;});
     connect(newer_,&QPushButton::clicked,this,[this]{newer_->setEnabled(false); jobOffset_=0; jobsDirty_=true; needRead_=true;});
     connect(currentManual_,&QPushButton::clicked,this,[this]{tabs_->setCurrentIndex(0); selectJob(manualJobId_);}); connect(currentMonitor_,&QPushButton::clicked,this,[this]{if(activeView_==0) tabs_->setCurrentIndex(fileEnabled_->isChecked()?1:2); selectJob(monitorJobId_);});
 #ifdef RESHETO_WITH_SERVICE
@@ -383,22 +396,47 @@ void MainWindow::showDetails() {
 void MainWindow::selectView(int index) {
     const bool files=index>=0 && index<static_cast<int>(resultViews_.size());
     fileHistory_->setVisible(files);filePages_->setVisible(files);summary_->setVisible(files);
+#ifdef RESHETO_WITH_NETWORK
+    const bool network=index==tabs_->indexOf(networkPanel_);
+    networkPanel_->historyControls()->setVisible(network);
+#endif
     if(!files) {
         details_->hide();
 #ifdef RESHETO_WITH_NETWORK
-        if(index==tabs_->indexOf(networkPanel_)){networkPanel_->setStorage(storage_->text());tabs_->setTabText(index,QStringLiteral("Сеть"));}
+        if(network){networkPanel_->setStorage(storage_->text());tabs_->setTabText(index,QStringLiteral("Сеть"));}
 #endif
         return;
     }
-    activeView_=index; auto &v=resultViews_[index]; table_=v.table; filter_=v.filter; search_=v.search; sort_=v.sort; direction_=v.direction; resetPage(); needRead_=true;
+    const bool changedSource=(activeView_==0)!=(index==0);
+    activeView_=index;
+    auto &v=resultViews_[index]; table_=v.table; filter_=v.filter; search_=v.search; sort_=v.sort; direction_=v.direction;
+    if(changedSource) {
+        jobId_=selectionForView();
+        knownResults_=-1;
+        total_=0;
+        wantLatest_=jobId_.isEmpty();
+        selectionRead_=true;
+        jobsDirty_=true;
+        QSignalBlocker block(jobs_);
+        jobs_->setCurrentIndex(jobId_.isEmpty()?-1:jobs_->findData(jobId_));
+        summary_->setText(QStringLiteral("Чтение истории…"));
+    }
+    resetPage(); needRead_=true;
     if(index==2)showProcesses();
 }
+QString &MainWindow::selectionForView() {return activeView_==0?manualSelection_:monitorSelection_;}
 void MainWindow::selectJob(const QString &id) {
     if(id.isEmpty()) return;
     { QSignalBlocker block(jobs_); int index=jobs_->findData(id);
-      if(index<0) { jobs_->addItem(QStringLiteral("Выбрано: ")+id,id); index=jobs_->count()-1; }
+      if(index<0) {
+          jobs_->addItem(QStringLiteral("Выбрано: ")+id,id);
+          index=jobs_->count()-1;
+          jobs_->setItemData(index,activeView_==0?QStringLiteral("manual"):QStringLiteral("monitor"),JobSourceRole);
+      }
       jobs_->setCurrentIndex(index); }
+    if(jobId_!=id)summary_->setText(QStringLiteral("Чтение истории…"));
     jobId_=id; knownResults_=-1; wantLatest_=false; selectionRead_=true; resetPage(); needRead_=true;
+    selectionForView()=id;
 }
 void MainWindow::resetPage(bool resetCursor) { ++generation_; if(resetCursor) { cursor_=0; upperRow_=0; } table_->setRowCount(0); visibleRows_.clear(); visibleEvents_.clear(); pageState_->clear(); details_->hide();detailsToggle_->setEnabled(false);
 #ifdef RESHETO_WITH_SERVICE
@@ -416,7 +454,7 @@ void MainWindow::loadHistory() {
     networkPanel_->setStorage(storage_->text());
 #endif
     if(running_ || monitorActive_ || historyPath_==storage_->text()) return;
-    historyPath_=storage_->text(); jobId_.clear(); manualJobId_.clear(); monitorJobId_.clear(); stoppedByHistoryError_=false; notifiedMatches_=0; notification_->clear(); notification_->hide();
+    historyPath_=storage_->text(); jobId_.clear(); manualSelection_.clear(); monitorSelection_.clear(); manualJobId_.clear(); monitorJobId_.clear(); stoppedByHistoryError_=false; notifiedMatches_=0; notification_->clear(); notification_->hide();
     historyError_.clear(); historyErrorLabel_->clear(); historyErrorLabel_->hide(); resetPage(); total_=0; wantLatest_=true; selectionRead_=true; needRead_=false; jobsDirty_=true; jobOffset_=0; hasEarlierJobs_=false; { QSignalBlocker block(jobs_); jobs_->clear(); } summary_->setText(QStringLiteral("Чтение истории…"));
 }
 void MainWindow::start() {
@@ -531,20 +569,31 @@ void MainWindow::readPage() {
     if(view_.valid()) return;
     const auto storage=storage_->text(),id=jobId_; const auto after=cursor_; const bool latest=wantLatest_,readJob=selectionRead_,readJobs=jobsDirty_; const auto jobOffset=jobOffset_;
     const bool live=(running_ && (id==manualJobId_ || id==controller_.progress().id)) || (monitorActive_ && id==monitorJobId_); const bool listOnly=table_->rowCount()>=200; const int limit=qMax(1,200-table_->rowCount()); if(listOnly && !readJobs) return;
+    const auto source=activeView_==0?QStringLiteral("manual"):QStringLiteral("monitor");
+    const auto liveJob=activeView_==0?(running_?manualJobId_:QString()):(monitorActive_?monitorJobId_:QString());
     ResultQuery query; query.offset=after; query.limit=limit; query.upperRow=upperRow_; query.filter=static_cast<ResultFilter>(filter_->currentIndex()); query.sort=static_cast<ResultSort>(sort_->currentIndex()); query.text=search_->text(); query.object=resultViews_[activeView_].object; query.descending=direction_->currentIndex()==1; const auto generation=generation_;
     wantLatest_=false; selectionRead_=false; jobsDirty_=false; needRead_=false;
-    view_=std::async(std::launch::async,[storage,id,after,latest,readJob,readJobs,live,jobOffset,query,generation,listOnly,endpoint=serviceEndpoint_] {
+    view_=std::async(std::launch::async,[storage,id,after,latest,readJob,readJobs,live,source,liveJob,jobOffset,query,generation,listOnly,endpoint=serviceEndpoint_] {
         ViewPage page; page.jobId=id; page.cursor=after; page.generation=generation; page.listOnly=listOnly; page.listed=readJobs;
         try {
-            auto read=[&](auto &history,auto latestJob) {
+            auto read=[&](auto &history) {
                 if(readJobs) {
                     page.jobs=history.jobs(jobOffset,51);
                     page.hasEarlierJobs=page.jobs.size()>50;
                     if(page.hasEarlierJobs)page.jobs.pop_back();
                 }
                 if(latest) {
-                    page.job=latestJob();
-                    if(page.job)page.jobId=page.job->id;
+                    constexpr int batchSize=200;
+                    for(qint64 offset=0;;offset+=batchSize) {
+                        const auto batch=history.jobs(offset,batchSize);
+                        const auto match=std::find_if(batch.begin(),batch.end(),[&](const Job &job){return job.source==source;});
+                        if(match!=batch.end()) {
+                            page.job=history.getJob(match->id,match->id!=liveJob);
+                            if(page.job)page.jobId=page.job->id;
+                            break;
+                        }
+                        if(batch.size()<batchSize)break;
+                    }
                 } else if(readJob && !id.isEmpty()) {
                     page.job=history.getJob(id,!live);
                     if(!page.job)throw Error(QStringLiteral("Задание отсутствует в истории: ")+id);
@@ -565,16 +614,13 @@ void MainWindow::readPage() {
 #ifdef RESHETO_WITH_SERVICE
             if(!endpoint.isEmpty()) {
                 service::Client client(endpoint);
-                read(client,[&]() -> std::optional<Job> {
-                    const auto recent=client.jobs(0,1);
-                    return recent.empty()?std::nullopt:client.getJob(recent.front().id);
-                });
+                read(client);
                 return page;
             }
 #endif
             if(!QFileInfo::exists(storage) && (latest || id.isEmpty()))return page;
             Store store(storage,true);
-            read(store,[&]{return store.latest();});
+            read(store);
         } catch(const Error &e) { page.error=e.message; } return page;
     });
 }
@@ -649,6 +695,8 @@ void MainWindow::pollService() {
                 historyPath_=status.storagePath;
                 storage_->setText(historyPath_);
                 jobId_.clear();
+                manualSelection_.clear();
+                monitorSelection_.clear();
                 manualJobId_.clear();
                 monitorJobId_.clear();
                 monitorActive_=false;
@@ -759,9 +807,30 @@ void MainWindow::tick() {
         else if(!page.error.isEmpty()) { if(historyError_.isEmpty()) historyError_=QStringLiteral("Ошибка чтения хранилища: ")+page.error; historyErrorLabel_->setText(historyError_); historyErrorLabel_->show(); if(serviceEndpoint_.isEmpty() && (running_ || monitorActive_)) { stoppedByHistoryError_=true; controller_.cancel(); monitor_.cancel(); stop_->setEnabled(false); watchStop_->setEnabled(false); } }
         else {
             if(!serviceEndpoint_.isEmpty()) {historyError_.clear();historyErrorLabel_->hide();}
-            if(page.listed) { QSignalBlocker block(jobs_); jobs_->clear(); for(const auto &j:page.jobs) { const auto label=QStringLiteral("%1 · %2 · %3 · %4").arg(j.started,j.source=="monitor"?QStringLiteral("Наблюдение"):QStringLiteral("Вручную"),stateText(j.state),j.path); jobs_->addItem(label,j.id); } if(!page.jobId.isEmpty() && jobs_->findData(page.jobId)<0) jobs_->addItem(QStringLiteral("Выбрано: ")+page.jobId,page.jobId); jobs_->setCurrentIndex(jobs_->findData(page.jobId)); hasEarlierJobs_=page.hasEarlierJobs; }
-            if(page.job) { jobId_=page.jobId; showSummary(*page.job); knownResults_=page.job->results; if(page.job->source=="monitor" && tabs_->currentIndex()==0 && page.rows.empty()) { tabs_->setCurrentIndex(1); needRead_=true; } }
-            else if(page.jobId.isEmpty()) summary_->setText(QStringLiteral("Нет сохранённых заданий"));
+            if(page.listed) {
+                QSignalBlocker block(jobs_);
+                jobs_->clear();
+                for(const auto &j:page.jobs) {
+                    const auto label=QStringLiteral("%1 · %2 · %3 · %4").arg(j.started,j.source=="monitor"?QStringLiteral("Наблюдение"):QStringLiteral("Вручную"),stateText(j.state),j.path);
+                    jobs_->addItem(label,j.id);
+                    jobs_->setItemData(jobs_->count()-1,j.source,JobSourceRole);
+                }
+                if(!page.jobId.isEmpty() && jobs_->findData(page.jobId)<0) {
+                    jobs_->addItem(QStringLiteral("Выбрано: ")+page.jobId,page.jobId);
+                    jobs_->setItemData(jobs_->count()-1,activeView_==0?QStringLiteral("manual"):QStringLiteral("monitor"),JobSourceRole);
+                }
+                jobs_->setCurrentIndex(page.jobId.isEmpty()?-1:jobs_->findData(page.jobId));
+                hasEarlierJobs_=page.hasEarlierJobs;
+            }
+            if(page.job) {
+                jobId_=page.jobId;
+                selectionForView()=jobId_;
+                showSummary(*page.job);
+                knownResults_=page.job->results;
+            } else if(page.jobId.isEmpty()) {
+                if(jobs_->count()==0)summary_->setText(QStringLiteral("Нет сохранённых заданий"));
+                else summary_->setText(activeView_==0?QStringLiteral("Нет заданий ручной проверки"):QStringLiteral("Нет заданий наблюдения"));
+            }
             if(!page.listOnly && page.jobId==jobId_ && page.generation==generation_) {
                 cursor_=page.cursor; total_=page.total; upperRow_=page.upperRow; size_t eventIndex=0;
                 for(const auto &r:page.rows) { const int row=table_->rowCount(); table_->insertRow(row); visibleRows_.push_back(r); visibleEvents_.push_back(eventIndex<page.rowEvents.size()?page.rowEvents[eventIndex]:QJsonObject()); ++eventIndex;

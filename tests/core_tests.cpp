@@ -182,10 +182,20 @@ private slots:
     }
     void persistenceAndWriteFailure() {
         database({pattern()}); put(dir+"/file",QByteArray::fromHex("aa00bb")); auto j=runJob(request()); QCOMPARE(j.matches,1);
+        const auto savedJobId=j.id;
         { Store s(storage); auto last=s.latest(); QVERIFY(last.has_value()); QCOMPARE(last->id,j.id); QCOMPARE(last->state,"completed"); QCOMPARE(s.page(j.id,0).front().signatureId,"test-pattern"); }
         { Database d(storage,true); auto q=d.exec("SELECT count(*) FROM detections"); QVERIFY(q.next()); QCOMPARE(q.value(0).toInt(),1); q=d.exec("SELECT count(*) FROM events"); QVERIFY(q.next()); QVERIFY(q.value(0).toInt()>=3); }
         { Database d(storage,false); d.exec("CREATE TRIGGER fail_write BEFORE INSERT ON results BEGIN SELECT RAISE(FAIL,'injected write failure'); END"); }
         j=runJob(request()); QCOMPARE(j.state,"failed"); QVERIFY(j.error.contains("injected write failure")); QCOMPARE(j.checked,0); QCOMPARE(j.exitCode(),2);
+        {
+            Store history(storage,true);
+            const auto saved=history.getJob(savedJobId);
+            QVERIFY(saved);
+            QCOMPARE(saved->state,"completed");
+            const auto results=history.page(savedJobId,0);
+            QCOMPARE(results.size(),size_t(1));
+            QCOMPARE(results.front().signatureId,"test-pattern");
+        }
         auto req=request(); req.storagePath=dir+"/absent/store.db"; j=runJob(req); QCOMPARE(j.state,"failed"); QVERIFY(!j.error.isEmpty());
     }
     void nativeLinks() {

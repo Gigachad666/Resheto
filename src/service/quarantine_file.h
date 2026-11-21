@@ -3,14 +3,12 @@
 class QFile;
 
 namespace resheto::service {
-inline constexpr qint64 quarantineFileLimit=256*1024*1024;
-
 // Только конкретный открытый обычный файл. Удаление не переоткрывает исходное имя.
 class HeldFile {
     struct Impl;
     std::unique_ptr<Impl> impl_;
 public:
-    explicit HeldFile(const QString &path,qint64 maximum=quarantineFileLimit);
+    explicit HeldFile(const QString &path);
     ~HeldFile();
     HeldFile(const HeldFile &)=delete;
     HeldFile &operator=(const HeldFile &)=delete;

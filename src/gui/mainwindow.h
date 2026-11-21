@@ -86,6 +86,7 @@ class MainWindow : public QMainWindow {
     std::future<DatabaseProbe> probe_;
     std::future<ViewPage> view_;
     QString probePath_, probeHeuristicPath_, jobId_, historyPath_;
+    QString manualSelection_,monitorSelection_;
     QString manualJobId_,monitorJobId_;
     qint64 jobOffset_=0,manualNotified_=0,monitorNotified_=0;
     bool jobsDirty_=true,selectionRead_=true,hasEarlierJobs_=false;
@@ -158,6 +159,7 @@ class MainWindow : public QMainWindow {
     void showProcesses();
     void showDetails();
     void setInputsEnabled(bool enabled);
+    QString &selectionForView();
     void selectJob(const QString &id);
     void selectView(int index);
     void notify(const Job &job,qint64 &known,const QString &source);

@@ -13,6 +13,7 @@
 #include <QSqlError>
 #include <QScopeGuard>
 #include <QUuid>
+#include <limits>
 
 namespace resheto::service {
 namespace {
@@ -58,6 +59,10 @@ void write(QFile &file,const QByteArray &bytes) {
     require(file.write(bytes)==bytes.size(),QStringLiteral("Не удалось записать файл карантина: ")+file.errorString());
 }
 
+bool validPayloadSize(qint64 size) {
+    return size>=0 && size<=std::numeric_limits<qint64>::max()-magic.size();
+}
+
 QString pack(HeldFile &source,const QString &path,const QString &expected) {
     QFile output(path);
     require(output.open(QIODevice::WriteOnly|QIODevice::NewOnly),QStringLiteral("Не удалось создать упаковку карантина: ")+output.errorString());
@@ -65,24 +70,25 @@ QString pack(HeldFile &source,const QString &path,const QString &expected) {
     protectPrivateFile(path);
     write(output,magic);
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    qint64 size=0;
+    auto remaining=source.size();
     for(auto bytes=source.read();!bytes.isEmpty();bytes=source.read()) {
-        size+=bytes.size();
-        require(size<=quarantineFileLimit,QStringLiteral("Файл вырос во время помещения в карантин"));
+        require(bytes.size()<=remaining,QStringLiteral("Файл вырос во время помещения в карантин"));
+        remaining-=bytes.size();
         hash.addData(bytes);
         write(output,transform(std::move(bytes)));
     }
     const auto actual=QString::fromLatin1(hash.result().toHex());
-    require(source.unchanged() && size==source.size() && actual==expected,QStringLiteral("Файл изменился после обнаружения. Повторите проверку"));
+    require(source.unchanged() && remaining==0 && actual==expected,QStringLiteral("Файл изменился после обнаружения. Повторите проверку"));
     durableFlush(output);
     cleanup.dismiss();
     return actual;
 }
 
 void unpack(HeldFile &blob,const QString &expected,qint64 expectedSize,QFile *output=nullptr) {
+    require(blob.size()-magic.size()==expectedSize,QStringLiteral("Изменён размер упаковки карантина"));
     blob.rewind();
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    qint64 total=0;
+    auto remaining=expectedSize;
     bool first=true;
     for(auto bytes=blob.read();!bytes.isEmpty();bytes=blob.read()) {
         if(first) {
@@ -91,12 +97,12 @@ void unpack(HeldFile &blob,const QString &expected,qint64 expectedSize,QFile *ou
             first=false;
         }
         auto plain=transform(std::move(bytes));
-        total+=plain.size();
-        require(total<=expectedSize,QStringLiteral("Изменён размер упаковки карантина"));
+        require(plain.size()<=remaining,QStringLiteral("Изменён размер упаковки карантина"));
+        remaining-=plain.size();
         hash.addData(plain);
         if(output)write(*output,plain);
     }
-    require(!first && blob.unchanged() && total==expectedSize && QString::fromLatin1(hash.result().toHex())==expected,
+    require(!first && blob.unchanged() && remaining==0 && QString::fromLatin1(hash.result().toHex())==expected,
             QStringLiteral("Контрольная сумма карантина не совпадает. Действие остановлено"));
 }
 
@@ -147,7 +153,7 @@ QJsonObject Quarantine::item(const QString &id) {
     require(object["id"]==id && object["job_id"]==query.value(0).toString() && object["result_key"]==query.value(1).toString() &&
             object["state"]==query.value(2).toString() && states.contains(object["state"].toString()) &&
             digest(object["result_key"].toString()) && digest(object["sha256"].toString()) &&
-            QDir::isAbsolutePath(object["original_path"].toString()) && protocol::counter(object["size"])<=quarantineFileLimit,
+            QDir::isAbsolutePath(object["original_path"].toString()) && validPayloadSize(protocol::counter(object["size"])),
             QStringLiteral("Противоречивые метаданные карантина"));
     for(const auto *key:{"created","updated","target_path","reason","blob_identity","stage_path","restore_temporary","restored_identity"})
         require(object[key].isString(),QStringLiteral("Неполные метаданные карантина"));
@@ -209,6 +215,7 @@ QJsonObject Quarantine::take(const QString &jobId,const QString &key) {
         HeldFile source(original);
         require(source.identity()==detection->identity && source.size()==detection->size,
                 QStringLiteral("Файл подменён после обнаружения. Повторите проверку"));
+        require(validPayloadSize(source.size()),QStringLiteral("Размер файла с заголовком упаковки не представим в карантине"));
         id=QUuid::createUuid().toString(QUuid::WithoutBraces);
         const auto stage=stagingPath(original,id);
         const auto stamp=now();
@@ -228,7 +235,7 @@ QJsonObject Quarantine::take(const QString &jobId,const QString &key) {
         pack(source,temporary,detection->sha256);
         publishNew(temporary,blobPath);
         {
-            HeldFile blob(blobPath,quarantineFileLimit+magic.size());
+            HeldFile blob(blobPath);
             unpack(blob,detection->sha256,source.size());
             object["blob_identity"]=blob.identity();
         }
@@ -273,7 +280,7 @@ QJsonObject Quarantine::restore(const QString &id,const QString &alternative) {
         require(!within(target,directory_) && target!=storage_ && !QFileInfo::exists(target) && !isLinkOrReparse(target),
                 QStringLiteral("Путь восстановления занят или относится к служебным данным. Выберите другой путь"));
         require(QFileInfo(QFileInfo(target).absolutePath()).isDir(),QStringLiteral("Родительский каталог восстановления отсутствует"));
-        HeldFile blob(directory_+"/"+checkedId(id)+".bin",quarantineFileLimit+magic.size());
+        HeldFile blob(directory_+"/"+checkedId(id)+".bin");
         require(blob.identity()==object["blob_identity"].toString(),QStringLiteral("Упаковка карантина подменена"));
         unpack(blob,object["sha256"].toString(),protocol::counter(object["size"]));
         const auto temporary=QFileInfo(target).absolutePath()+"/.resheto-restore-"+id+".part";
@@ -316,7 +323,7 @@ QJsonObject Quarantine::erase(const QString &id) {
         original=object["original_path"].toString();
         require(object["state"]=="stored" || object["state"]=="restored" || object["state"]=="interrupted",
                 QStringLiteral("Запись недоступна для удаления из карантина"));
-        HeldFile blob(directory_+"/"+checkedId(id)+".bin",quarantineFileLimit+magic.size());
+        HeldFile blob(directory_+"/"+checkedId(id)+".bin");
         require(blob.identity()==object["blob_identity"].toString(),QStringLiteral("Упаковка карантина подменена"));
         unpack(blob,object["sha256"].toString(),protocol::counter(object["size"]));
         object["stage_path"]=stagingPath(directory_+"/"+id+".bin",id);
@@ -327,7 +334,13 @@ QJsonObject Quarantine::erase(const QString &id) {
         // Для POSIX промежуточная сверка относится к упакованным байтам.
         blob.rewind();
         QCryptographicHash packedHash(QCryptographicHash::Sha256);
-        for(auto bytes=blob.read();!bytes.isEmpty();bytes=blob.read())packedHash.addData(bytes);
+        auto remaining=blob.size();
+        for(auto bytes=blob.read();!bytes.isEmpty();bytes=blob.read()) {
+            require(bytes.size()<=remaining,QStringLiteral("Упаковка изменилась перед удалением"));
+            remaining-=bytes.size();
+            packedHash.addData(bytes);
+        }
+        require(remaining==0,QStringLiteral("Упаковка изменилась перед удалением"));
         blob.removeVerified(object["stage_path"].toString(),QString::fromLatin1(packedHash.result().toHex()));
         update(id,"deleted");
         record("delete",original,jobId,id,"completed");

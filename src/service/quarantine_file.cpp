@@ -182,7 +182,7 @@ struct HeldFile::Impl {
 #endif
 };
 
-HeldFile::HeldFile(const QString &path,qint64 maximum):impl_(std::make_unique<Impl>()) {
+HeldFile::HeldFile(const QString &path):impl_(std::make_unique<Impl>()) {
     impl_->path=path;
     rejectLinks(path);
 #ifdef Q_OS_WIN
@@ -202,7 +202,7 @@ HeldFile::HeldFile(const QString &path,qint64 maximum):impl_(std::make_unique<Im
     require(::fstat(impl_->fd,&impl_->info)==0 && S_ISREG(impl_->info.st_mode) && impl_->info.st_nlink==1,
             QStringLiteral("Требуется обычный файл без ссылок и других жёстких имён"));
 #endif
-    require(size()>=0 && size()<=maximum,QStringLiteral("Карантин принимает файлы размером до 256 МиБ"));
+    require(size()>=0,QStringLiteral("Размер файла не представим в метаданных карантина"));
 }
 
 HeldFile::~HeldFile()=default;
@@ -275,8 +275,14 @@ void HeldFile::removeVerified(const QString &stagePath,const QString &expectedHa
     if(good) {
         rewind();
         QCryptographicHash hash(QCryptographicHash::Sha256);
-        for(auto bytes=read();!bytes.isEmpty();bytes=read())hash.addData(bytes);
-        good=QString::fromLatin1(hash.result().toHex())==expectedHash;
+        auto remaining=size();
+        for(auto bytes=read();!bytes.isEmpty();bytes=read()) {
+            if(bytes.size()>remaining) {good=false;break;}
+            remaining-=bytes.size();
+            hash.addData(bytes);
+        }
+        good=good && remaining==0 && ::fstat(impl_->fd,&current)==0 && impl_->same(current) &&
+             QString::fromLatin1(hash.result().toHex())==expectedHash;
     }
     if(!good) {
         const bool returned=renameNew(stageFd,"held",impl_->parent,impl_->name.constData())==0;
