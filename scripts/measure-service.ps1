@@ -1,13 +1,18 @@
 ﻿#requires -Version 7.2
 param(
     [Parameter(Mandatory)][string]$Output,
-    [string]$Bin = 'build/windows/Release',
+    [string]$Bin = '',
     [ValidateRange(1,3)][int]$Repetitions = 2,
     [ValidateRange(0,120)][int]$IdleSeconds = 0
 )
 $ErrorActionPreference = 'Stop'
+if (!$IsWindows -and !$IsLinux) { throw 'Supported platforms: Windows and Linux' }
+if (!$Bin) { $Bin = if ($IsWindows) { 'build/windows/Release' } else { 'build/release' } }
+$exeSuffix = if ($IsWindows) { '.exe' } else { '' }
 $repo = (Resolve-Path -LiteralPath '.').Path
 $Bin = (Resolve-Path -LiteralPath $Bin).Path
+$serviceBinary = Join-Path $Bin "resheto-service$exeSuffix"
+$workerName = "resheto-network-worker$exeSuffix"
 $Output = [IO.Path]::GetFullPath($Output)
 if (Test-Path -LiteralPath $Output) { throw "A new output directory is required: $Output" }
 New-Item -ItemType Directory -Path $Output | Out-Null
@@ -18,7 +23,7 @@ function Assert-That([bool]$Condition, [string]$Message) {
 }
 
 function Prepare([string]$Program, [string[]]$Arguments, [string]$Log) {
-    & (Join-Path $Bin $Program) @Arguments | Set-Content -LiteralPath (Join-Path $Output $Log)
+    & (Join-Path $Bin "$Program$exeSuffix") @Arguments | Set-Content -LiteralPath (Join-Path $Output $Log)
     Assert-That ($LASTEXITCODE -eq 0) "$Program exited with $LASTEXITCODE"
 }
 
@@ -33,27 +38,55 @@ function Read-Bytes($Stream, [int]$Length, $Token) {
     return ,$bytes
 }
 
+function Open-UnixServiceStream([string]$Path) {
+    $socket = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::Unix,
+        [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Unspecified)
+    $timeout = [Threading.CancellationTokenSource]::new(1600)
+    try {
+        $address = [Net.Sockets.UnixDomainSocketEndPoint]::new($Path)
+        $null = $socket.ConnectAsync($address, $timeout.Token).AsTask().GetAwaiter().GetResult()
+        return [Net.Sockets.NetworkStream]::new($socket, $true)
+    } catch {
+        $socket.Dispose()
+        throw
+    } finally { $timeout.Dispose() }
+}
+
+function Open-ServiceStream([string]$Endpoint) {
+    if ($IsLinux) {
+        # QLocalServer resolves a short endpoint inside Qt's temporary directory.
+        return (Open-UnixServiceStream (Join-Path ([IO.Path]::GetTempPath()) $Endpoint))
+    }
+    $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $Endpoint, [IO.Pipes.PipeDirection]::InOut,
+        [IO.Pipes.PipeOptions]::Asynchronous, [Security.Principal.TokenImpersonationLevel]::Impersonation)
+    try {
+        $pipe.Connect(1600)
+        return $pipe
+    } catch {
+        $pipe.Dispose()
+        throw
+    }
+}
+
 function Request($Service, [string]$Command, [hashtable]$Fields = @{}) {
     $body = $utf8.GetBytes((@{version=1; command=$Command} + $Fields | ConvertTo-Json -Depth 12 -Compress))
     $header = [BitConverter]::GetBytes([uint32]$body.Length)
     if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($header) }
-    $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $Service.endpoint, [IO.Pipes.PipeDirection]::InOut,
-        [IO.Pipes.PipeOptions]::Asynchronous, [Security.Principal.TokenImpersonationLevel]::Impersonation)
+    $stream = Open-ServiceStream $Service.endpoint
     $timeout = [Threading.CancellationTokenSource]::new(15000)
     try {
-        $pipe.Connect(1600)
-        $pipe.Write([byte[]]($header + $body), 0, 4 + $body.Length)
-        $pipe.Flush()
-        $header = Read-Bytes $pipe 4 $timeout.Token
+        $stream.Write([byte[]]($header + $body), 0, 4 + $body.Length)
+        $stream.Flush()
+        $header = Read-Bytes $stream 4 $timeout.Token
         if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($header) }
         $length = [BitConverter]::ToUInt32($header, 0)
         Assert-That ($length -gt 0 -and $length -le 4MB) 'Invalid local response size'
-        $reply = $utf8.GetString((Read-Bytes $pipe $length $timeout.Token)) | ConvertFrom-Json
+        $reply = $utf8.GetString((Read-Bytes $stream $length $timeout.Token)) | ConvertFrom-Json
         if (!$reply.ok) { throw "$Command failed: $($reply.code) $($reply.message)" }
         return $reply.result
     } finally {
         $timeout.Dispose()
-        $pipe.Dispose()
+        $stream.Dispose()
     }
 }
 
@@ -68,8 +101,10 @@ function Start-FixtureService([string]$Name, [string]$Database, [string]$Heurist
     $stdout = Join-Path $directory 'stdout.txt'
     $stderr = Join-Path $directory 'stderr.txt'
     $watch = [Diagnostics.Stopwatch]::StartNew()
-    $process = Start-Process -FilePath (Join-Path $Bin 'resheto-service.exe') -ArgumentList @('--config', ('"{0}"' -f $path)) `
-        -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+    $launch = @{FilePath=$serviceBinary; ArgumentList=@('--config', ('"{0}"' -f $path));
+        RedirectStandardOutput=$stdout; RedirectStandardError=$stderr; PassThru=$true}
+    if ($IsWindows) { $launch.WindowStyle = 'Hidden' }
+    $process = Start-Process @launch
     try {
         while (!$process.HasExited -and $watch.ElapsedMilliseconds -lt 15000) {
             if (Select-String -LiteralPath $stdout -Quiet -SimpleMatch "READY $($config.endpoint)") {
@@ -79,14 +114,45 @@ function Start-FixtureService([string]$Name, [string]$Database, [string]$Heurist
         }
         throw "Service did not become ready: $(Get-Content -LiteralPath $stderr -Raw)"
     } catch {
-        if (!$process.HasExited) { $process.Kill(); $process.WaitForExit() }
+        Stop-FixtureService @{process=$process}
         throw
     }
 }
 
 function Stop-FixtureService($Service) {
-    if (!$Service.process.HasExited) { $Service.process.Kill(); $Service.process.WaitForExit() }
-    $Service.process.Dispose()
+    $process = $Service.process
+    try {
+        if ($IsLinux -and !$process.HasExited) {
+            & kill -TERM $process.Id 2>$null
+            $null = $process.WaitForExit(3000)
+        }
+        if (!$process.HasExited) {
+            $process.Kill()
+            $null = $process.WaitForExit(3000)
+        }
+    } finally { $process.Dispose() }
+}
+
+function Get-CpuName {
+    if ($IsWindows) { return (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name) }
+    $model = Select-String -LiteralPath '/proc/cpuinfo' -Pattern '^model name\s*:\s*(.+)$' | Select-Object -First 1
+    if ($model) { return $model.Matches[0].Groups[1].Value }
+    return [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+}
+
+function Find-WorkerId([int]$ParentId) {
+    if ($IsWindows) {
+        $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$ParentId AND Name='$workerName'" | Select-Object -First 1
+        if ($child) { return [int]$child.ProcessId }
+        return 0
+    }
+    foreach ($childId in (& ps --ppid $ParentId -o pid=)) {
+        $childId = [int]$childId
+        try { $executable = [IO.File]::ResolveLinkTarget("/proc/$childId/exe", $false) }
+        catch [IO.IOException] { continue }
+        if ($executable -and $executable.Name -ceq $workerName) { return $childId }
+    }
+    return 0
 }
 
 function Await($Service, [string]$Command, [scriptblock]$Condition, [int]$Seconds = 20) {
@@ -112,9 +178,9 @@ function Scan($Service, [string]$Path, [bool]$Recursive = $false) {
 $sigs = Join-Path $Output 'file-input'
 $heur = Join-Path $Output 'heur-input'
 $net = Join-Path $Output 'net-input'
-Prepare resheto-prepare.exe @('--source','data/demo_signatures.json','--output',$sigs) 'prepare-signatures.txt'
-Prepare resheto-lab4-prepare.exe @('--heuristics','data/heuristic_rules.json','--behavior','data/behavior_rules.json','--output',$heur) 'prepare-heuristics.txt'
-Prepare resheto-network-prepare.exe @('--rules','data/network_rules.json','--output',$net) 'prepare-network.txt'
+Prepare resheto-prepare @('--source','data/demo_signatures.json','--output',$sigs) 'prepare-signatures.txt'
+Prepare resheto-lab4-prepare @('--heuristics','data/heuristic_rules.json','--behavior','data/behavior_rules.json','--output',$heur) 'prepare-heuristics.txt'
+Prepare resheto-network-prepare @('--rules','data/network_rules.json','--output',$net) 'prepare-network.txt'
 $controlDb = Join-Path $sigs 'signatures.db'
 $workingDb = Join-Path $repo 'distribution/working/current.json'
 $current = Get-Content -LiteralPath $workingDb -Raw | ConvertFrom-Json
@@ -124,9 +190,10 @@ $heuristics = Join-Path $repo 'data/heuristic_rules.json'
 $report = [ordered]@{
     format='resheto-acceptance-v1'; timestamp_utc=[DateTime]::UtcNow.ToString('o')
     system=[Environment]::OSVersion.VersionString
-    cpu=(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
-    service_sha256=(Get-FileHash -LiteralPath (Join-Path $Bin 'resheto-service.exe')).Hash
-    worker_sha256=(Get-FileHash -LiteralPath (Join-Path $Bin 'resheto-network-worker.exe')).Hash
+    os_description=[Runtime.InteropServices.RuntimeInformation]::OSDescription
+    cpu=(Get-CpuName)
+    service_sha256=(Get-FileHash -LiteralPath $serviceBinary).Hash
+    worker_sha256=(Get-FileHash -LiteralPath (Join-Path $Bin $workerName)).Hash
     working_db_sha256=(Get-FileHash -LiteralPath $workingSqlite).Hash
     quality=[ordered]@{}; profile=@()
 }
@@ -251,8 +318,7 @@ for ($run=1; $run -le $Repetitions; $run++) {
             $ns = Request $service network_status
             if (!$networkMs -and !$ns.busy -and $ns.job.id -eq $network.id) { $networkMs=$time.ElapsedMilliseconds }
             if (!$workerId -and $ns.busy) {
-                $worker = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($service.process.Id) AND Name='resheto-network-worker.exe'" | Select-Object -First 1
-                if ($worker) { $workerId=$worker.ProcessId }
+                $workerId = Find-WorkerId $service.process.Id
             }
             if ($workerId) {
                 $worker = Get-Process -Id $workerId -ErrorAction SilentlyContinue
